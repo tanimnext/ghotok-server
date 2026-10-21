@@ -23,7 +23,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       # The tests start a throwaway MongoDB; keep its binary between runs.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/mongodb-binaries
           key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
