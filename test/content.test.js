@@ -1,7 +1,9 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { MarriageReport } from '../src/models/index.js';
 import { app, approvedBiodata, login, userWithAgent } from './helpers.js';
+import { models } from '../index.js';
+
+const { MarriageReport } = models;
 
 const PREVIEW = 'https://i.ibb.co/abc123/simple-wedding-preview.png';
 const DESIGN = 'https://i.ibb.co/def456/simple-wedding.png';

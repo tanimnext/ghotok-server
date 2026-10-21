@@ -26,7 +26,7 @@ Browser ──► ghotok-client (Next.js) ──/api/* proxy──► ghotok-ser
 
 - The client proxies `/api/*` to this server, so the browser only talks to the website's origin
   and the Better Auth session cookie is first-party.
-- `/api/auth/*` is Better Auth. Everything else is the Ghotok API (`src/routes`).
+- `/api/auth/*` is Better Auth. Everything else is the Ghotok API (the Routes section of `index.js`).
 - Images (support attachments, report evidence, wedding banners) are uploaded by the browser to
   ImgBB; the API accepts only `https://i.ibb.co/…` and `https://ibb.co/…` links. There are no
   profile photos and no NID uploads.
@@ -81,7 +81,7 @@ sign in with codes without an SMS or email provider.
 ## Configuration
 
 Every variable is documented in [`.env.example`](.env.example) and validated at start-up in
-[`src/config/env.js`](src/config/env.js). The important ones:
+the Configuration section of [`index.js`](index.js) (`envConfig`). The important ones:
 
 | Variable                                   | Meaning                                                                                       |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
@@ -98,21 +98,44 @@ Every variable is documented in [`.env.example`](.env.example) and validated at 
 ## Project layout
 
 ```
-src/
-  app.js                 Express app: security, Better Auth, routes, errors
-  server.js              Connects to MongoDB and listens
-  config/                env, logger, database, Better Auth (auth.js)
-  routes/ → validations/ → controllers/ → services/ → models/
-  serializers/           Output shapes (what each audience may see)
-  integrations/          Payment gateways, email and SMS
-  shared/                Biodata form definition, options, locations, permissions
-  scripts/seed.js        Seed data
+index.js                 The whole API, in one file (see below)
 test/                    API tests and the shared rules' tests
 docs/API.md              Every endpoint
+docs/adr/                Decision records
 ```
 
-The biodata definition, option lists and permissions in `src/shared/` are also used by the
-client, which keeps its own copy. **When you change them, change both repositories.**
+**Everything is in `index.js`.** The file is split into sections, in this order:
+
+1. Configuration: environment (`envConfig`), logger, database connection (`dbConfig`)
+2. Shared rules: option lists, locations, the biodata definition, permissions (`shared`)
+3. Utilities (errors, pagination, request helpers)
+4. Database models (Mongoose), collected in `models` (`models.Biodata`, `models.User`, …)
+5. Integrations: email, SMS and the payment gateways (`paymentGateways`)
+6. Authentication: Better Auth (`authConfig`)
+7. Services: the business rules (`biodataService`, `paymentService`, …)
+8. Request validation schemas (Zod) (`biodataValidation`, `adminValidation`, …)
+9. Serializers: what each audience may see (`biodataSerializer`, …)
+10. Middleware: auth, security, validation, errors
+11. Controllers
+12. Routes (`apiRoutes`, `adminRoutes`, …)
+13. The Express application (`appModule.createApp`)
+14. Seed data and the seed script (`seedScript`)
+15. Start: `node index.js` runs the server, `node index.js seed [--demo]` seeds the database
+
+Each part is a namespace object: `const biodataService = (() => { …; return { … }; })();`.
+Parts reach each other through these names, so to find something:
+
+- jump to a part: search for `const biodataService =`
+- find everything that uses it: search for `biodataService.`
+- find an endpoint: search for its path (for example `'/me/submit'`) in the Routes section,
+  then follow the controller and service names it calls.
+
+Each part only uses parts defined above it while the file loads; calls between services at
+request time can go in either direction. When you add a part, put it in its section and keep
+that rule.
+
+The biodata definition, option lists and permissions in the Shared rules section are also used
+by the client, which keeps its own copy. **When you change them, change both repositories.**
 
 ## Deployment
 

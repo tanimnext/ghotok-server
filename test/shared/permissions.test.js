@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DISTRICTS,
-  DIVISIONS,
-  PERMISSIONS,
-  can,
-  divisionOf,
-  isStaff,
-  toBnDigits,
-} from '../../src/shared/index.js';
+import { shared } from '../../index.js';
+
+const { DISTRICTS, DIVISIONS, PERMISSIONS, can, divisionOf, isStaff, toBnDigits } = shared;
 
 describe('permissions', () => {
   it('gives members no admin access', () => {

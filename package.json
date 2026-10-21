@@ -4,15 +4,15 @@
   "private": true,
   "description": "Ghotok REST API — Node.js, Express, MongoDB and Better Auth.",
   "type": "module",
-  "main": "src/server.js",
+  "main": "index.js",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "dev": "node --watch --env-file-if-exists=.env src/server.js",
-    "start": "node --env-file-if-exists=.env src/server.js",
-    "seed": "node --env-file-if-exists=.env src/scripts/seed.js",
-    "seed:demo": "node --env-file-if-exists=.env src/scripts/seed.js --demo",
+    "dev": "node --watch --env-file-if-exists=.env index.js",
+    "start": "node --env-file-if-exists=.env index.js",
+    "seed": "node --env-file-if-exists=.env index.js seed",
+    "seed:demo": "node --env-file-if-exists=.env index.js seed --demo",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

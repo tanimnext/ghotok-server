@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { User } from '../src/models/index.js';
 import { approvedBiodata, userWithAgent } from './helpers.js';
+import { models } from '../index.js';
+
+const { User } = models;
 
 const RECEIPT = 'https://i.ibb.co/Xy12Ab/bkash-receipt.png';
 
@@ -122,7 +124,7 @@ describe('reports as conversations', () => {
 describe('notifications', () => {
   it('lets members delete a notification', async () => {
     const { user, agent } = await userWithAgent();
-    const { notify } = await import('../src/services/notification.service.js');
+    const { notify } = (await import('../index.js')).notificationService;
     await notify(user._id, 'favorited', { biodataNo: 'GH-1' });
     const list = await agent.get('/api/me/notifications');
     expect(list.body.items).toHaveLength(1);

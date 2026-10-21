@@ -1,7 +1,9 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ConnectionTransaction, Package, User } from '../src/models/index.js';
 import { app, approvedBiodata, userWithAgent } from './helpers.js';
+import { models } from '../index.js';
+
+const { ConnectionTransaction, Package, User } = models;
 
 let standard;
 let starter;

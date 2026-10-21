@@ -1,8 +1,10 @@
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sslcommerz } from '../src/integrations/payments/sslcommerz.js';
-import { Package, Payment, Setting, User } from '../src/models/index.js';
 import { app, approvedBiodata, login, userWithAgent } from './helpers.js';
+import { models, sslcommerzIntegration } from '../index.js';
+
+const { sslcommerz } = sslcommerzIntegration;
+const { Package, Payment, Setting, User } = models;
 
 afterEach(() => vi.restoreAllMocks());
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
+import { shared } from '../../index.js';
+
+const {
   BIODATA_SECTIONS,
   DISTRICTS,
   ageFromDob,
@@ -13,7 +15,7 @@ import {
   upazilasOf,
   validateBiodata,
   validateSection,
-} from '../../src/shared/index.js';
+} = shared;
 
 describe('normalizePhone / isValidPhone', () => {
   it.each([

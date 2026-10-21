@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { Biodata, ConnectionTransaction, MarriageReport, User } from '../src/models/index.js';
 import { approvedBiodata, demoSections, login, PEOPLE, userWithAgent } from './helpers.js';
+import { models } from '../index.js';
+
+const { Biodata, ConnectionTransaction, MarriageReport, User } = models;
 
 async function submittedBiodata(index) {
   const { user, agent } = await userWithAgent();

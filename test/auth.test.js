@@ -1,7 +1,9 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { User } from '../src/models/index.js';
 import { app, client, codeFor, createUser, login, ORIGIN, PASSWORD, userWithAgent } from './helpers.js';
+import { models } from '../index.js';
+
+const { User } = models;
 
 const cookieOf = (res, name) => (res.headers['set-cookie'] ?? []).find((c) => c.includes(`${name}=`));
 

@@ -88,7 +88,7 @@ describe('biodata lifecycle', () => {
       await agent.put(`/api/biodatas/me/sections/${key}`).send({ data });
     await agent.post('/api/biodatas/me/submit');
     const { user: reviewer } = await userWithAgent({ role: 'admin' });
-    const { Biodata } = await import('../src/models/index.js');
+    const { Biodata } = (await import('../index.js')).models;
     const b = await Biodata.findOne({ status: 'pending' }).sort({ createdAt: -1 });
     b.status = 'approved';
     b.reviewedBy = reviewer._id;

@@ -12,7 +12,7 @@ uploads were dropped from the product.
 ## Decision
 
 - The Express API is a standalone repository. The rules the client also needs (biodata
-  definition, options, locations, permissions) are copied into `src/shared` here and into the
+  definition, options, locations, permissions) are copied into this repository (now the Shared rules section of `index.js`, see 0007) and into the
   client, instead of a shared package.
 - Better Auth 1.7 handles accounts and sessions at `/api/auth`, using the same MongoDB database
   through its MongoDB adapter. The Mongoose `User` model maps Better Auth's `user` collection.

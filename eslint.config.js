@@ -22,7 +22,6 @@ export default [
       'no-param-reassign': ['error', { props: false }],
     },
   },
-  { files: ['src/scripts/**/*.js'], rules: { 'no-console': 'off' } },
   // Keep formatting concerns with Prettier.
   prettier,
 ];

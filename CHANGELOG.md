@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The whole API is now one file, `index.js`, organised in sections (configuration, shared rules,
+  models, integrations, Better Auth, services, validation, serializers, middleware, controllers,
+  routes, app, seed, start). Endpoints, responses and environment variables are unchanged.
+- Run it with `node index.js`; seed with `node index.js seed` or `node index.js seed --demo`
+  (`npm start`, `npm run seed` and `npm run seed:demo` do the same). The Docker image runs
+  `node index.js`.
+
 ## [2.0.0] - 2026-10-21
 
 The API becomes its own repository, separate from the website and admin dashboard

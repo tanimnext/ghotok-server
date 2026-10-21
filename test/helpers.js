@@ -1,8 +1,9 @@
 import request from 'supertest';
-import { createApp } from '../src/app.js';
-import { lastDevCode } from '../src/integrations/messaging/dev-outbox.js';
-import { Biodata, User, nextSequence } from '../src/models/index.js';
-import { PEOPLE, demoSections } from '../src/scripts/seed-data/demo-people.js';
+import { createApp, devOutboxIntegration, models, seedPeople } from '../index.js';
+
+const { lastDevCode } = devOutboxIntegration;
+const { Biodata, User, nextSequence } = models;
+const { PEOPLE, demoSections } = seedPeople;
 
 export const app = createApp();
 

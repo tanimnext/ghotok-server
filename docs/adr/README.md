@@ -12,3 +12,4 @@ them "Superseded by NNNN" instead).
 | [0004](0004-connection-ledger.md)              | A connection ledger with atomic conditional updates                   | Accepted           |
 | [0005](0005-manual-payments-first.md)          | Manual mobile-money verification first, gateways optional             | Accepted           |
 | [0006](0006-separate-repos-and-better-auth.md) | Separate client and server repositories, Better Auth, images on ImgBB | Accepted           |
+| [0007](0007-single-file-api.md)                | The whole API in one file, `index.js`                                 | Accepted           |

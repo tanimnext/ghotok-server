@@ -2,9 +2,9 @@
 
 Base URL: `/api` (in development `http://localhost:4000/api`; the client proxies `/api` to the
 API so the browser calls it on the website's own origin). Request and response bodies are JSON.
-Every route is defined in `src/routes/` and every request body, query and URL parameter is
-validated by the Zod schemas in `src/validations/`. Authentication endpoints under `/api/auth`
-belong to [Better Auth](https://www.better-auth.com) (configured in `src/config/auth.js`). Those
+Every route is defined in the Routes section of `index.js` and every request body, query and URL
+parameter is validated by the Zod schemas in its Request validation section. Authentication endpoints under `/api/auth`
+belong to [Better Auth](https://www.better-auth.com) (configured in the Authentication section of `index.js`, `authConfig`). Those
 files are the source of truth when this page and the code disagree.
 
 ## Conventions
@@ -178,7 +178,7 @@ Browsing and interacting (`:no` is a biodata number such as `GH-1005`):
 ## Admin: `/admin`
 
 Every route needs an admin account (role `admin`). The permission column names the entry in
-`src/shared/permissions.js`; all of them belong to admins.
+the permissions in `index.js` (`sharedPermissions`); all of them belong to admins.
 
 **Overview and insight**
 
