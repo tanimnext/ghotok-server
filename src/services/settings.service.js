@@ -30,7 +30,6 @@ export const DEFAULT_SETTINGS = {
     rocket: { enabled: true, manualNumber: '', accountType: 'personal' },
   },
   stats: { marriagesOffset: 0, show: true },
-  moderation: { requireNidForApproval: false },
 };
 
 const isObject = (v) => v && typeof v === 'object' && !Array.isArray(v);

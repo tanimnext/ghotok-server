@@ -9,7 +9,7 @@ import {
   isValidPhone,
   normalizePhone,
   optionValues,
-} from '@ghotok/shared';
+} from '../shared/index.js';
 import { objectId } from './common.validation.js';
 
 const method = z.enum(optionValues(PAYMENT_METHODS));

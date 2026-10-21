@@ -1,5 +1,4 @@
-import { biodataCompletion, validateBiodata, validateSection } from '@ghotok/shared';
-import { storage } from '../integrations/storage/index.js';
+import { biodataCompletion, validateBiodata, validateSection } from '../shared/index.js';
 import { Biodata, ContactUnlock, Favorite, Proposal, Report, RestoreRequest, User } from '../models/index.js';
 import { toAdminRow, toFullView } from '../serializers/biodata.serializer.js';
 import { toUserSummary } from '../serializers/user.serializer.js';
@@ -13,10 +12,10 @@ import { correctionsState } from './biodata.service.js';
 import { changeBalance } from './connection.service.js';
 import { visitStats } from './visit.service.js';
 
-// Staff work on biodatas: review queue, approval, edits, hiding, deletion,
-// NID verification and the soft-delete recovery queue.
+// Staff work on biodatas: review queue, approval, edits, hiding, deletion
+// and the soft-delete recovery queue.
 
-const OWNER_FIELDS = 'name email phone role status';
+const OWNER_FIELDS = 'name email phoneNumber role status';
 
 async function load(id) {
   const b = await Biodata.findById(id).populate('user', OWNER_FIELDS);
@@ -24,19 +23,18 @@ async function load(id) {
   return b;
 }
 
-export async function listBiodatas({ status, nid, type, religion, hidden, blocked, deleted, q }, query) {
+export async function listBiodatas({ status, type, religion, hidden, blocked, deleted, q }, query) {
   const filter = {};
   if (deleted === 'true') filter.deletedAt = { $ne: null };
   else if (deleted !== 'all') filter.deletedAt = null;
   if (status) filter.status = status;
-  if (nid) filter['nid.status'] = nid;
   if (type) filter.type = type;
   if (religion) filter.religion = religion;
   if (hidden === 'true') filter.isHidden = true;
   if (blocked === 'true') filter.blocked = true;
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
-    const users = await User.find({ $or: [{ name: re }, { email: q.toLowerCase() }, { phone: q }] })
+    const users = await User.find({ $or: [{ name: re }, { email: q.toLowerCase() }, { phoneNumber: q }] })
       .select('_id')
       .limit(50);
     filter.$or = [
@@ -88,10 +86,6 @@ export async function approveBiodata(id, ctx) {
     throw badRequest('INCOMPLETE', 'This biodata is incomplete and cannot be approved.', {
       sections: errors,
     });
-  }
-  const moderation = await getSetting('moderation');
-  if (moderation.requireNidForApproval && b.nid?.status !== 'verified') {
-    throw conflict('NID_REQUIRED', 'Verify the NID before approving.');
   }
   const now = new Date();
   const firstApproval = !b.firstApprovedAt;
@@ -242,46 +236,6 @@ export async function restoreBiodata(id, note, ctx) {
   const b = await load(id);
   if (!b.deletedAt) throw conflict('NOT_DELETED', 'This biodata is not deleted.');
   await restore(b, note, ctx);
-  return toAdminRow(b);
-}
-
-// ----- NID ---------------------------------------------------------------------
-
-/** Short-lived links to the NID images. Every view is audited. */
-export async function nidDocuments(id, ctx) {
-  const b = await load(id);
-  if (!b.nid?.frontKey) throw notFound('NID documents');
-  const [front, back] = await Promise.all([
-    storage.privateUrl(b.nid.frontKey),
-    storage.privateUrl(b.nid.backKey),
-  ]);
-  await recordAudit(ctx, 'nid.view', {
-    targetType: 'biodata',
-    targetId: b._id,
-    summary: `Viewed NID of ${b.biodataNo}`,
-  });
-  return { status: b.nid.status, submittedAt: b.nid.submittedAt, front, back, note: b.nid.note ?? null };
-}
-
-/** @param {'verified' | 'rejected'} status */
-export async function decideNid(id, status, note, ctx) {
-  if (status === 'rejected' && !note) throw validationError({ note: 'Add a note for the user.' });
-  const b = await load(id);
-  if (b.nid?.status !== 'pending') throw conflict('NOT_PENDING', 'There is no NID waiting for verification.');
-  Object.assign(b.nid, { status, note, reviewedAt: new Date(), reviewedBy: ctx.actor._id });
-  await b.save();
-  await notify(
-    b.user._id,
-    status === 'verified' ? 'nid_verified' : 'nid_rejected',
-    { biodataNo: b.biodataNo, note },
-    '/dashboard/biodata',
-  );
-  await recordAudit(ctx, status === 'verified' ? 'nid.verify' : 'nid.reject', {
-    targetType: 'biodata',
-    targetId: b._id,
-    summary: `NID ${status} for ${b.biodataNo}`,
-    meta: { note },
-  });
   return toAdminRow(b);
 }
 

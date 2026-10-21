@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isValidEmail, isValidPhone, normalizePhone } from '@ghotok/shared';
+import { isValidEmail, isValidPhone, normalizePhone } from '../shared/index.js';
 
 export const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid id');
 export const idParams = z.object({ id: objectId });
@@ -12,24 +12,6 @@ export const paginationQuery = z.object({
 
 export const i18nText = (max) =>
   z.object({ en: z.string().max(max).default(''), bn: z.string().max(max).default('') });
-
-/** Accepts an email or a Bangladeshi mobile number (any common format) and normalises it. */
-export const identifier = z
-  .string()
-  .trim()
-  .min(3)
-  .max(120)
-  .transform((value, ctx) => {
-    if (value.includes('@')) {
-      const email = value.toLowerCase();
-      if (isValidEmail(email)) return { field: 'email', value: email };
-    } else {
-      const phone = normalizePhone(value);
-      if (isValidPhone(phone)) return { field: 'phone', value: phone };
-    }
-    ctx.addIssue({ code: 'custom', message: 'Enter a valid email or mobile number.' });
-    return z.NEVER;
-  });
 
 export const password = z.string().min(8, 'Use at least 8 characters.').max(128);
 
@@ -48,3 +30,25 @@ export const optionalPhone = z
   .optional()
   .transform((v) => (v ? normalizePhone(v) : undefined))
   .refine((v) => !v || isValidPhone(v), 'Enter a valid mobile number (01XXXXXXXXX).');
+
+// Images are uploaded by the browser straight to ImgBB; the API only stores the links.
+// Accepting only ImgBB hosts keeps arbitrary third-party URLs out of tickets and banners.
+const IMGBB_HOSTS = new Set(['i.ibb.co', 'ibb.co']);
+
+export function isImgbbUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && IMGBB_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export const imgbbUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .refine(isImgbbUrl, 'Upload the image through ImgBB (https://i.ibb.co/…).');
+
+/** Up to five ImgBB image links attached to a support message or report. */
+export const imageAttachments = z.array(imgbbUrl).max(5, 'Attach at most 5 images.').optional();

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { DISTRICTS, DIVISIONS, PERMISSIONS, can, divisionOf, isStaff, toBnDigits } from '../src/index.js';
+import {
+  DISTRICTS,
+  DIVISIONS,
+  PERMISSIONS,
+  can,
+  divisionOf,
+  isStaff,
+  toBnDigits,
+} from '../../src/shared/index.js';
 
 describe('permissions', () => {
   it('gives members no admin access', () => {
@@ -7,15 +15,14 @@ describe('permissions', () => {
     expect(Object.keys(PERMISSIONS).some((p) => can('user', p))).toBe(false);
   });
 
-  it('lets support reviewers moderate but not touch money or roles', () => {
-    expect(can('support', 'biodata.review')).toBe(true);
-    expect(can('support', 'nid.verify')).toBe(true);
-    expect(can('support', 'payments.manage')).toBe(false);
-    expect(can('support', 'roles.assign')).toBe(false);
+  it('gives admins every permission', () => {
+    expect(isStaff('admin')).toBe(true);
+    expect(Object.keys(PERMISSIONS).every((p) => can('admin', p))).toBe(true);
   });
 
-  it('gives super admins every permission', () => {
-    expect(Object.keys(PERMISSIONS).every((p) => can('super_admin', p))).toBe(true);
+  it('knows no other roles', () => {
+    expect(can('support', 'biodata.review')).toBe(false);
+    expect(can('super_admin', 'settings.manage')).toBe(false);
   });
 });
 

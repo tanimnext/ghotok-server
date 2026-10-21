@@ -1,10 +1,10 @@
-import { PAYMENT_METHODS } from '@ghotok/shared';
+import { PAYMENT_METHODS } from '../shared/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { gatewayFor, gateways } from '../integrations/payments/index.js';
 import { Biodata, Package, Payment, RefundRequest, nextSequence } from '../models/index.js';
 import { toPackageDTO, toPaymentDTO } from '../serializers/payment.serializer.js';
-import { toUserSummary } from '../serializers/user.serializer.js';
+import { contactEmail, toUserSummary } from '../serializers/user.serializer.js';
 import { ApiError, badRequest, conflict, notFound } from '../utils/api-error.js';
 import { pageParams, paged, paginate } from '../utils/pagination.js';
 import { escapeRegex } from '../utils/strings.js';
@@ -115,7 +115,7 @@ async function startGatewayCheckout(base, { ip, user }) {
       // Gateways that post the result back (SSLCommerz) use these instead.
       returnURL: `${env.API_PUBLIC_URL}/api/gateway/${base.method}/return`,
       ipnURL: `${env.API_PUBLIC_URL}/api/gateway/${base.method}/ipn`,
-      customer: { name: user.name, email: user.email, phone: user.phone },
+      customer: { name: user.name, email: contactEmail(user), phone: user.phoneNumber },
       ip,
     });
     payment.gateway = { paymentId: started.paymentId, response: started.raw };
@@ -229,7 +229,7 @@ export function listPayments({ status, method, mode, q }, query) {
   return paginate(
     Payment.find(filter)
       .sort({ createdAt: status === 'pending' ? 1 : -1 })
-      .populate('user', 'name email phone role status')
+      .populate('user', 'name email phoneNumber role status')
       .populate('reviewedBy', 'name'),
     Payment.countDocuments(filter),
     pageParams(query, { defaultLimit: 20 }),

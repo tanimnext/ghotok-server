@@ -4,12 +4,14 @@ import { memberDashboard } from '../services/dashboard.service.js';
 import * as listService from '../services/list.service.js';
 import * as notificationService from '../services/notification.service.js';
 import * as proposalService from '../services/proposal.service.js';
-import { issueTokens } from '../services/token.service.js';
 import { toUserDTO } from '../serializers/user.serializer.js';
-import { clearAuthCookies, setAuthCookies } from '../utils/auth-cookies.js';
-import { requestContext } from '../utils/request.js';
 
 // The signed-in member's own account (/api/me).
+
+/** The signed-in account (role decides where the client sends the user: /admin or /dashboard). */
+export function me(req, res) {
+  res.json({ user: toUserDTO(req.user) });
+}
 
 export async function dashboard(req, res) {
   res.json(await memberDashboard(req.user));
@@ -19,17 +21,8 @@ export async function updateProfile(req, res) {
   res.json({ user: toUserDTO(await accountService.updateProfile(req.user, req.body)) });
 }
 
-export async function changePassword(req, res) {
-  const keep = req.sessionFamily;
-  const { user, signedOut } = await accountService.changePassword(req.user._id, req.body, keep);
-  // An access token from before session ids existed names no device; give this one a fresh session.
-  if (!keep) setAuthCookies(res, await issueTokens(user, requestContext(req)));
-  res.json({ ok: true, signedOut });
-}
-
 export async function deactivate(req, res) {
-  await accountService.deactivate(req.user._id, req.body);
-  clearAuthCookies(res);
+  await accountService.deactivate(req.user, req.body);
   res.json({ ok: true });
 }
 

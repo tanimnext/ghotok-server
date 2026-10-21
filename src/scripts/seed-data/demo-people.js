@@ -1,5 +1,5 @@
 // Demo people for local development and tests. Fictional names and numbers.
-import { DISTRICTS, divisionOf, upazilasOf } from '@ghotok/shared';
+import { DISTRICTS, divisionOf, upazilasOf } from '../../shared/index.js';
 
 // [type, religion, age, heightInches, district, education, profession, jobTitle, institution, name]
 export const PEOPLE = [

@@ -1,16 +1,14 @@
 import { z } from 'zod';
-import { PROPOSAL_STATUS, optionValues } from '@ghotok/shared';
-import { password } from './common.validation.js';
+import { PROPOSAL_STATUS, optionValues } from '../shared/index.js';
 
 export const updateProfile = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   language: z.enum(['en', 'bn']).optional(),
 });
 
-export const changePassword = z.object({ currentPassword: z.string().min(1), newPassword: password });
-
 export const deactivate = z.object({
-  password: z.string().min(1),
+  // Required when the account has a password (members who only use codes or Google have none).
+  password: z.string().max(128).optional(),
   reason: z.string().trim().max(500).optional(),
 });
 

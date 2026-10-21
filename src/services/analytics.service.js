@@ -1,4 +1,4 @@
-import { can } from '@ghotok/shared';
+import { can } from '../shared/index.js';
 import {
   Biodata,
   ConnectionTransaction,
@@ -25,7 +25,6 @@ const LIVE = { status: 'approved', deletedAt: null, isHidden: false, blocked: { 
 export async function adminOverview(actor) {
   const [
     pendingBiodatas,
-    pendingNid,
     openReports,
     pendingRestores,
     openTickets,
@@ -35,7 +34,6 @@ export async function adminOverview(actor) {
     biodatas,
   ] = await Promise.all([
     Biodata.countDocuments({ status: 'pending', deletedAt: null }),
-    Biodata.countDocuments({ 'nid.status': 'pending', deletedAt: null }),
     Report.countDocuments({ status: { $in: ['open', 'in_review'] } }),
     RestoreRequest.countDocuments({ status: 'pending' }),
     SupportTicket.countDocuments({ status: { $in: ['open', 'waiting'] } }),
@@ -54,10 +52,10 @@ export async function adminOverview(actor) {
     Biodata.find({ status: 'pending', deletedAt: null })
       .sort({ submittedAt: 1 })
       .limit(5)
-      .populate('user', 'name email phone role status'),
+      .populate('user', 'name email phoneNumber role status'),
   ]);
   const overview = {
-    kpis: { pendingBiodatas, pendingNid, openReports, pendingRestores, openTickets, newMessages },
+    kpis: { pendingBiodatas, openReports, pendingRestores, openTickets, newMessages },
     reports: reports.map((r) => ({
       id: r._id,
       reason: r.reason,
@@ -86,7 +84,7 @@ export async function adminOverview(actor) {
       Payment.find({ status: 'pending' })
         .sort({ createdAt: 1 })
         .limit(6)
-        .populate('user', 'name email phone role status'),
+        .populate('user', 'name email phoneNumber role status'),
     ]);
     Object.assign(overview.kpis, { pendingPayments, pendingRefunds, revenue30: revenue[0]?.total ?? 0 });
     overview.payments = payments.map((p) => ({ ...toPaymentDTO(p), user: toUserSummary(p.user) }));

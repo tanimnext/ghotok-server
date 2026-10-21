@@ -39,7 +39,7 @@ export function listRefunds({ status }, query) {
   return paginate(
     RefundRequest.find(filter)
       .sort({ createdAt: status === 'pending' ? 1 : -1 })
-      .populate('user', 'name email phone role status connectionBalance')
+      .populate('user', 'name email phoneNumber role status connectionBalance')
       .populate('payment')
       .populate('decidedBy', 'name'),
     RefundRequest.countDocuments(filter),

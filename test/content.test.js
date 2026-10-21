@@ -3,61 +3,50 @@ import { describe, expect, it } from 'vitest';
 import { MarriageReport } from '../src/models/index.js';
 import { app, approvedBiodata, login, userWithAgent } from './helpers.js';
 
-const PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
-const PDF = Buffer.from('%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n');
-
-async function upload(admin, kind, contentType, body) {
-  const target = await admin
-    .post('/api/admin/banners/upload-url')
-    .send({ kind, contentType, size: body.length });
-  expect(target.status, JSON.stringify(target.body)).toBe(200);
-  const put = await request(app).put(target.body.uploadURL).set('Content-Type', contentType).send(body);
-  expect(put.status, JSON.stringify(put.body)).toBe(200);
-  return target.body.ticket;
-}
+const PREVIEW = 'https://i.ibb.co/abc123/simple-wedding-preview.png';
+const DESIGN = 'https://i.ibb.co/def456/simple-wedding.png';
 
 describe('wedding banners', () => {
-  it('lets staff publish a PDF banner that visitors download and count', async () => {
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+  it('lets admins publish an ImgBB banner that visitors download and count', async () => {
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
 
-    const wrong = await admin
-      .post('/api/admin/banners/upload-url')
-      .send({ kind: 'file', contentType: 'image/png', size: 10 });
-    expect(wrong.status).toBe(400);
-    // A PDF upload target refuses an image.
-    const pdfTarget = await admin
-      .post('/api/admin/banners/upload-url')
-      .send({ kind: 'file', contentType: 'application/pdf', size: 10 });
-    expect(
-      (await request(app).put(pdfTarget.body.uploadURL).set('Content-Type', 'image/png').send(PNG)).status,
-    ).toBe(400);
+    const offsite = await admin.post('/api/admin/banners').send({
+      title: { en: 'Elsewhere' },
+      imageUrl: 'https://example.com/banner.png',
+    });
+    expect(offsite.status).toBe(400);
+    expect(offsite.body.error.details.fields.imageUrl).toBeTruthy();
+    const plainHttp = await admin.post('/api/admin/banners').send({
+      title: { en: 'Insecure' },
+      imageUrl: 'http://i.ibb.co/abc/banner.png',
+    });
+    expect(plainHttp.status).toBe(400);
 
-    const previewTicket = await upload(admin, 'preview', 'image/png', PNG);
-    const fileTicket = await upload(admin, 'file', 'application/pdf', PDF);
     const created = await admin.post('/api/admin/banners').send({
       title: { en: 'Simple wedding', bn: 'সাদামাটা বিয়ে' },
-      fileName: 'simple-wedding.pdf',
-      previewTicket,
-      fileTicket,
+      imageUrl: PREVIEW,
+      downloadUrl: DESIGN,
     });
     expect(created.status).toBe(201);
 
     const list = await request(app).get('/api/public/banners');
     expect(list.body.items).toHaveLength(1);
-    expect((await request(app).get(list.body.items[0].previewUrl)).headers['content-type']).toBe('image/png');
+    expect(list.body.items[0]).toMatchObject({ imageUrl: PREVIEW, downloads: 0 });
+    expect(list.body.items[0]).not.toHaveProperty('downloadUrl');
 
     const dl = await request(app).post(`/api/public/banners/${created.body.banner.id}/download`);
     expect(dl.status).toBe(200);
-    const file = await request(app).get(dl.body.url);
-    expect(file.headers['content-type']).toBe('application/pdf');
-    expect(file.headers['content-disposition']).toContain('simple-wedding.pdf');
+    expect(dl.body.url).toBe(DESIGN);
     expect((await request(app).get('/api/public/banners')).body.items[0].downloads).toBe(1);
 
+    // Only a preview: the download is the same image.
+    const single = await admin
+      .post('/api/admin/banners')
+      .send({ title: { en: 'One image' }, imageUrl: PREVIEW, sortOrder: 2 });
+    expect(single.body.banner.downloadUrl).toBe(PREVIEW);
+
     await admin.patch(`/api/admin/banners/${created.body.banner.id}`).send({ isActive: false });
-    expect((await request(app).get('/api/public/banners')).body.items).toHaveLength(0);
+    expect((await request(app).get('/api/public/banners')).body.items).toHaveLength(1);
     expect((await request(app).post(`/api/public/banners/${created.body.banner.id}/download`)).status).toBe(
       404,
     );
@@ -86,7 +75,7 @@ describe('success stories', () => {
       marriage: { story: 'Private story', shareStory: false },
     });
 
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const pending = await admin.get('/api/admin/marriage-reports?status=pending');
     expect(pending.body.items).toHaveLength(2);
     const shared = pending.body.items.find((r) => r.biodataNo === biodata.biodataNo);

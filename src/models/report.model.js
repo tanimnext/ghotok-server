@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { REPORT_REASONS, REPORT_STATUS, optionValues } from '@ghotok/shared';
+import { REPORT_REASONS, REPORT_STATUS, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { PROPOSAL_STATUS, optionValues } from '@ghotok/shared';
+import { PROPOSAL_STATUS, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 

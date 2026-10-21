@@ -9,9 +9,9 @@ import { idParams } from '../validations/common.validation.js';
 const router = Router();
 router.use(requireAuth);
 
+router.get('/', account.me);
 router.get('/dashboard', account.dashboard);
 router.patch('/', validate({ body: schema.updateProfile }), account.updateProfile);
-router.post('/change-password', validate({ body: schema.changePassword }), account.changePassword);
 router.delete('/', validate({ body: schema.deactivate }), account.deactivate);
 
 router.get('/favorites', account.favorites);

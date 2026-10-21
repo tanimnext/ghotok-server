@@ -1,14 +1,13 @@
-import { ageFromDob, publicSections } from '@ghotok/shared';
-import { photoUrl } from '../integrations/storage/index.js';
-import { toUserSummary } from './user.serializer.js';
+import { ageFromDob, publicSections } from '../shared/index.js';
+import { contactEmail, toUserSummary } from './user.serializer.js';
 
-// Output shapes for biodatas. Private data (names, the contact section, NID
-// documents) only appears in toFullView, which is for the owner and staff.
+// Output shapes for biodatas. Private data (names and the contact section) only
+// appears in toFullView, which is for the owner and staff.
 
 const isPublic = (b) => b.status === 'approved' && !b.isHidden && !b.blocked && !b.deletedAt;
 
 /** Summary used in search results, lists and the home page. No private data. */
-export function toCard(b, { showPhoto = false } = {}) {
+export function toCard(b) {
   return {
     id: b._id.toString(),
     biodataNo: b.biodataNo,
@@ -24,9 +23,6 @@ export function toCard(b, { showPhoto = false } = {}) {
     institution: b.education?.institution ?? null,
     profession: b.profession ?? null,
     jobTitle: b.occupation?.jobTitle ?? null,
-    nidVerified: b.nid?.status === 'verified',
-    photoUrl: showPhoto || b.photo?.visibility === 'public' ? photoUrl(b.photo) : null,
-    hasPhoto: !!b.photo?.imageId,
     approvedAt: b.approvedAt ?? null,
   };
 }
@@ -38,7 +34,10 @@ export function toCard(b, { showPhoto = false } = {}) {
 export function toPublicDetail(b, owner) {
   return {
     ...toCard(b),
-    verified: { email: !!owner?.emailVerified, phone: !!owner?.phoneVerified },
+    verified: {
+      email: !!owner?.emailVerified && !!contactEmail(owner),
+      phone: !!owner?.phoneNumberVerified,
+    },
     sections: publicSections(b.sectionsObject()),
     views: b.stats?.views ?? 0,
     updatedAt: b.updatedAt,
@@ -48,7 +47,7 @@ export function toPublicDetail(b, owner) {
 /** Everything the owner or staff may see, including private sections. */
 export function toFullView(b) {
   return {
-    ...toCard(b, { showPhoto: true }),
+    ...toCard(b),
     status: b.status,
     rejectionReason: b.rejectionReason ?? null,
     submittedAt: b.submittedAt ?? null,
@@ -64,12 +63,6 @@ export function toFullView(b) {
       b.editSuspendedUntil && b.editSuspendedUntil > new Date() ? b.editSuspendedUntil : null,
     pledgeAcceptedAt: b.pledgeAcceptedAt ?? null,
     completion: b.completion,
-    photo: b.photo?.imageId ? { url: photoUrl(b.photo), visibility: b.photo.visibility } : null,
-    nid: {
-      status: b.nid?.status ?? 'not_submitted',
-      submittedAt: b.nid?.submittedAt ?? null,
-      note: b.nid?.note ?? null,
-    },
     stats: b.stats,
     sections: b.sectionsObject(),
     createdAt: b.createdAt,
@@ -101,8 +94,6 @@ export function toAdminRow(b) {
     district: b.district ?? null,
     age: ageFromDob(b.birthDate),
     completion: b.completion,
-    nidStatus: b.nid?.status ?? 'not_submitted',
-    nidSubmittedAt: b.nid?.submittedAt ?? null,
     isHidden: b.isHidden,
     blocked: !!b.blocked,
     deletedAt: b.deletedAt ?? null,

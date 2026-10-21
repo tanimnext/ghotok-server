@@ -13,7 +13,7 @@ import {
   upazilasOf,
   validateBiodata,
   validateSection,
-} from '../src/index.js';
+} from '../../src/shared/index.js';
 
 describe('normalizePhone / isValidPhone', () => {
   it.each([

@@ -1,38 +1,49 @@
 import request from 'supertest';
 import { createApp } from '../src/app.js';
-import { hashPassword } from '../src/utils/crypto.js';
+import { lastDevCode } from '../src/integrations/messaging/dev-outbox.js';
 import { Biodata, User, nextSequence } from '../src/models/index.js';
 import { PEOPLE, demoSections } from '../src/scripts/seed-data/demo-people.js';
 
 export const app = createApp();
 
+/** The website origin the API trusts (see vitest.config.js). Browsers always send it. */
+export const ORIGIN = 'http://localhost:3000';
+export const PASSWORD = 'Password1!';
+
 let n = 0;
 const uniq = () => `${Date.now().toString(36)}${(n += 1)}`;
 
+/** A cookie-keeping client that behaves like the website. */
+export function client() {
+  return request.agent(app).set('Origin', ORIGIN);
+}
+
+/**
+ * Creates an account through Better Auth's sign-up endpoint, then applies the test
+ * setup straight in the database (that is the only way to make an admin).
+ */
 export async function createUser({
   role = 'user',
   verified = true,
   balance = 0,
-  password = 'Password1!',
+  password = PASSWORD,
   name = 'Test User',
+  email = `u${uniq()}@example.com`,
 } = {}) {
-  const id = uniq();
-  const user = await User.create({
-    name,
-    email: `u${id}@example.com`,
-    passwordHash: await hashPassword(password),
-    role,
-    emailVerified: verified,
-    connectionBalance: balance,
-  });
-  return user;
+  const res = await client().post('/api/auth/sign-up/email').send({ name, email, password });
+  if (res.status !== 200) throw new Error(`sign-up failed: ${res.status} ${JSON.stringify(res.body)}`);
+  await User.updateOne(
+    { _id: res.body.user.id },
+    { role, emailVerified: verified, connectionBalance: balance },
+  );
+  return User.findById(res.body.user.id);
 }
 
-/** A supertest agent that keeps the auth cookies of a logged-in user. */
-export async function login(user, password = 'Password1!') {
-  const agent = request.agent(app);
-  const res = await agent.post('/api/auth/login').send({ identifier: user.email, password });
-  if (res.status !== 200) throw new Error(`login failed: ${res.status} ${JSON.stringify(res.body)}`);
+/** A client signed in as `user` (email + password). */
+export async function login(user, password = PASSWORD) {
+  const agent = client();
+  const res = await agent.post('/api/auth/sign-in/email').send({ email: user.email, password });
+  if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${JSON.stringify(res.body)}`);
   return agent;
 }
 
@@ -40,6 +51,9 @@ export async function userWithAgent(opts) {
   const user = await createUser(opts);
   return { user, agent: await login(user) };
 }
+
+/** The last one-time code "sent" to an email or phone number (OTP_DEV_ECHO is on in tests). */
+export const codeFor = (to) => lastDevCode(to);
 
 /** Creates a complete, approved biodata for a new user. */
 export async function approvedBiodata({ index = 0, overrides = {}, status = 'approved' } = {}) {

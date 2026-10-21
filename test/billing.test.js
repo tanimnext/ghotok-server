@@ -1,6 +1,7 @@
+import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ConnectionTransaction, Package, User } from '../src/models/index.js';
-import { approvedBiodata, userWithAgent } from './helpers.js';
+import { app, approvedBiodata, userWithAgent } from './helpers.js';
 
 let standard;
 let starter;
@@ -61,7 +62,7 @@ describe('connections and payments', () => {
     expect(dup.status).toBe(409);
     expect(dup.body.error.code).toBe('DUPLICATE_TRX');
 
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const [a, b] = await Promise.all([
       admin.post(`/api/admin/payments/${pay.body.payment.id}/verify`),
       admin.post(`/api/admin/payments/${pay.body.payment.id}/verify`),
@@ -140,7 +141,7 @@ describe('connections and payments', () => {
 
   it('lets a super admin grant, revoke and refund connections with an audit trail', async () => {
     const { user } = await userWithAgent();
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const grant = await admin
       .post('/api/admin/connections/adjust')
       .send({ user: user.email, action: 'grant', quantity: 4, reason: 'Compensation for a wrong number' });
@@ -162,7 +163,7 @@ describe('connections and payments', () => {
 
   it('handles refunds as connection credit or money back', async () => {
     const { agent, user } = await userWithAgent();
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
 
     // A payment the team could not verify, later refunded as credit.
     const p1 = await manualPayment(agent, { pkg: starter });
@@ -197,26 +198,26 @@ describe('connections and payments', () => {
     expect(mine.body.items.find((p) => p.id === p2.body.payment.id).status).toBe('refunded');
   });
 
-  it('enforces roles: users and support staff cannot touch money', async () => {
-    const { agent: user } = await userWithAgent();
-    const { agent: support } = await userWithAgent({ role: 'support' });
-    expect((await user.get('/api/admin/overview')).status).toBe(403);
-    expect((await support.get('/api/admin/overview')).status).toBe(200);
-    expect((await support.get('/api/admin/overview')).body.kpis.pendingPayments).toBeUndefined();
-    expect((await support.get('/api/admin/payments')).status).toBe(403);
+  it('keeps every admin route for admins: members get 403, visitors 401', async () => {
+    const { agent: member } = await userWithAgent();
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
+    expect((await request(app).get('/api/admin/overview')).status).toBe(401);
+    for (const path of ['/api/admin/overview', '/api/admin/payments', '/api/admin/analytics']) {
+      expect((await member.get(path)).status).toBe(403);
+      expect((await admin.get(path)).status).toBe(200);
+    }
     expect(
       (
-        await support
+        await member
           .post('/api/admin/connections/adjust')
           .send({ user: 'x', action: 'grant', quantity: 1, reason: 'abc' })
       ).status,
     ).toBe(403);
-    expect((await support.get('/api/admin/analytics')).status).toBe(403);
-    expect((await support.get('/api/admin/biodatas')).status).toBe(200);
+    expect((await admin.get('/api/admin/overview')).body.kpis.pendingPayments).toBeTypeOf('number');
   });
 
-  it('manages packages and settings as a super admin', async () => {
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+  it('manages packages and settings as an admin', async () => {
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const created = await admin
       .post('/api/admin/packages')
       .send({ name: { en: 'Premium', bn: 'প্রিমিয়াম' }, connections: 10, price: 900 });

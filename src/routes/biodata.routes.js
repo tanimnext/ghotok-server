@@ -32,23 +32,6 @@ router.post(
   biodata.requestRestore,
 );
 router.get('/me/stats', requireAuth, biodata.stats);
-router.post('/me/photo/upload-url', ...member, writeLimiter, biodata.photoUploadUrl);
-router.post('/me/photo', ...member, validate({ body: schema.attachPhoto }), biodata.attachPhoto);
-router.patch(
-  '/me/photo',
-  requireAuth,
-  validate({ body: schema.photoVisibility }),
-  biodata.setPhotoVisibility,
-);
-router.delete('/me/photo', requireAuth, biodata.removePhoto);
-router.post(
-  '/me/nid/upload-url',
-  ...member,
-  writeLimiter,
-  validate({ body: schema.nidUploadUrl }),
-  biodata.nidUploadUrl,
-);
-router.post('/me/nid', ...member, validate({ body: schema.submitNid }), biodata.submitNid);
 
 // ----- Public -----
 router.get('/', validate({ query: schema.searchQuery }), biodata.search);

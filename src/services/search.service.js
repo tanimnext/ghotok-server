@@ -1,4 +1,4 @@
-import { EDUCATION_LEVELS } from '@ghotok/shared';
+import { EDUCATION_LEVELS } from '../shared/index.js';
 import { Biodata, Dislike, Favorite, ProfileVisit, PUBLIC_FILTER } from '../models/index.js';
 import { toCard } from '../serializers/biodata.serializer.js';
 import { pageParams, paginate } from '../utils/pagination.js';
@@ -64,7 +64,6 @@ export function buildSearchFilter(q) {
     const rank = EDUCATION_LEVELS.findIndex((e) => e.value === q.education);
     if (rank >= 0) filter.educationRank = { $gte: rank };
   }
-  if (q.nid === 'verified') filter['nid.status'] = 'verified';
   if (q.q) {
     const digits = String(q.q).replace(/\D/g, '').slice(0, 10);
     if (digits) filter.biodataNo = new RegExp(`^GH-${escapeRegex(digits)}`, 'i');

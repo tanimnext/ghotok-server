@@ -1,14 +1,12 @@
 import mongoose from 'mongoose';
-import { TICKET_CATEGORIES, TICKET_PRIORITY, TICKET_STATUS, optionValues } from '@ghotok/shared';
+import { TICKET_CATEGORIES, TICKET_PRIORITY, TICKET_STATUS, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 
 const attachmentSchema = new Schema(
   {
-    key: { type: String, required: true },
-    name: { type: String, maxlength: 120 },
-    type: { type: String, required: true },
-    size: Number,
+    // An image hosted on ImgBB (uploaded by the browser).
+    url: { type: String, required: true, maxlength: 500 },
   },
   { _id: false },
 );
@@ -17,7 +15,7 @@ const messageSchema = new Schema(
   {
     author: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     staff: { type: Boolean, default: false },
-    // A message may be only an attachment.
+    // A message may be only images.
     body: { type: String, default: '', maxlength: 20000 },
     attachments: { type: [attachmentSchema], default: undefined },
   },

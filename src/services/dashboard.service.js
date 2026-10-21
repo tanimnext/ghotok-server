@@ -51,7 +51,6 @@ export async function memberDashboard(user) {
       completion: b.completion,
       type: b.type,
       district: b.district,
-      nidStatus: b.nid?.status ?? 'not_submitted',
       rejectionReason: b.rejectionReason ?? null,
     },
     connections: {

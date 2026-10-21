@@ -1,4 +1,4 @@
-import { REPORT_REASONS, optionLabel } from '@ghotok/shared';
+import { REPORT_REASONS, optionLabel } from '../shared/index.js';
 import { ContactUnlock, Report, SupportTicket } from '../models/index.js';
 import { toAdminRow } from '../serializers/biodata.serializer.js';
 import { toUserSummary } from '../serializers/user.serializer.js';
@@ -63,8 +63,8 @@ export async function listReports({ status }, query) {
       .sort({ createdAt: -1 })
       .skip(params.skip)
       .limit(params.limit)
-      .populate('reporter', 'name email phone role status')
-      .populate('targetUser', 'name email phone role status')
+      .populate('reporter', 'name email phoneNumber role status')
+      .populate('targetUser', 'name email phoneNumber role status')
       .populate('biodata')
       .populate('handledBy', 'name'),
     Report.countDocuments(filter),

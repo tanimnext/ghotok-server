@@ -1,13 +1,4 @@
-import crypto from 'node:crypto';
-import { biodataCompletion, validateBiodata, validateSection } from '@ghotok/shared';
-import {
-  ALLOWED_IMAGE_TYPES,
-  MAX_UPLOAD_BYTES,
-  photoUrl,
-  signUploadToken,
-  storage,
-  verifyUploadToken,
-} from '../integrations/storage/index.js';
+import { biodataCompletion, validateBiodata, validateSection } from '../shared/index.js';
 import {
   Biodata,
   ContactUnlock,
@@ -96,9 +87,7 @@ export async function createOwn(userId) {
  * @returns {Promise<{ biodata: object, statusChanged: boolean }>}
  */
 export async function saveSection(userId, section, data) {
-  const b = await findOwn(userId);
-  if (!b)
-    throw conflict('PLEDGE_REQUIRED', 'Please read and accept the pledge before creating your biodata.');
+  const b = await requireStarted(userId);
   assertEditable(b);
   const { value, errors } = validateSection(section, data, { biodata: b.sectionsObject(), partial: true });
   if (Object.keys(errors).length) throw validationError(errors);
@@ -234,90 +223,6 @@ export async function ownStats(userId) {
   return { visits, favoritedBy, unlocks: b.stats?.unlocks ?? 0, views: b.stats?.views ?? 0 };
 }
 
-// ----- Photo -----------------------------------------------------------------
-// 1) the client asks for an upload URL, 2) uploads the file straight to storage,
-// 3) attaches it with the signed ticket, which proves the upload was issued to them.
-
-export async function createPhotoUpload(userId) {
-  const upload = await storage.createPhotoUpload({ userId: String(userId) });
-  const ticket = signUploadToken(
-    { kind: 'ticket', imageId: upload.imageId, storage: upload.storage, userId: String(userId) },
-    '30m',
-  );
-  return { ...upload, ticket, maxBytes: MAX_UPLOAD_BYTES, types: ALLOWED_IMAGE_TYPES };
-}
-
-export async function attachPhoto(userId, { ticket, visibility }) {
-  const t = verifyUploadToken(ticket, 'ticket');
-  if (!t?.imageId || t.userId !== String(userId)) {
-    throw badRequest('BAD_TICKET', 'The upload has expired. Please try again.');
-  }
-  if (t.storage === 'local' && !(await storage.exists(`photos/${t.imageId}`))) {
-    throw badRequest('UPLOAD_MISSING', 'We could not find the uploaded photo.');
-  }
-  const b = await requireStarted(userId);
-  assertEditable(b);
-  const previous = b.photo?.imageId;
-  b.photo = {
-    imageId: t.imageId,
-    storage: t.storage,
-    visibility: visibility ?? b.photo?.visibility ?? 'after_unlock',
-  };
-  await b.save();
-  if (previous && previous !== t.imageId) await storage.deletePhoto(previous).catch(() => undefined);
-  return b;
-}
-
-export async function setPhotoVisibility(userId, visibility) {
-  const b = await findOwn(userId);
-  if (!b?.photo?.imageId) throw notFound('Photo');
-  b.photo.visibility = visibility;
-  await b.save();
-  return b;
-}
-
-export async function removePhoto(userId) {
-  const b = await findOwn(userId);
-  if (!b?.photo?.imageId) throw notFound('Photo');
-  const { imageId } = b.photo;
-  b.photo = undefined;
-  await b.save();
-  await storage.deletePhoto(imageId).catch(() => undefined);
-  return b;
-}
-
-// ----- NID -------------------------------------------------------------------
-// Both sides go to private storage; only reviewers can open them (short-lived URLs).
-
-export async function createNidUpload(userId, { side, contentType }) {
-  const key = `nid/${userId}/${crypto.randomUUID()}-${side}`;
-  const upload = await storage.createPrivateUpload({ key, contentType, userId: String(userId) });
-  const ticket = signUploadToken({ kind: 'ticket', key, userId: String(userId) }, '30m');
-  return { ...upload, ticket, maxBytes: MAX_UPLOAD_BYTES };
-}
-
-export async function submitNid(userId, { frontTicket, backTicket }) {
-  const keys = [frontTicket, backTicket].map((ticket) => {
-    const t = verifyUploadToken(ticket, 'ticket');
-    if (!t?.key || t.userId !== String(userId) || !t.key.startsWith(`nid/${userId}/`)) {
-      throw badRequest('BAD_TICKET', 'The upload has expired. Please try again.');
-    }
-    return t.key;
-  });
-  for (const key of keys) {
-    if (!(await storage.exists(key)))
-      throw badRequest('UPLOAD_MISSING', 'We could not find the uploaded NID images.');
-  }
-  const b = await requireStarted(userId);
-  assertEditable(b);
-  if (b.nid?.status === 'verified') throw conflict('ALREADY_VERIFIED', 'Your NID is already verified.');
-  const previous = [b.nid?.frontKey, b.nid?.backKey].filter(Boolean);
-  b.nid = { status: 'pending', frontKey: keys[0], backKey: keys[1], submittedAt: new Date() };
-  await b.save();
-  await Promise.all(previous.map((k) => storage.deletePrivate(k).catch(() => undefined)));
-  return b;
-}
-
 // ----- Public ------------------------------------------------------------------
 
 /** Finds a public biodata by its number (e.g. "GH-1024") or throws 404. */
@@ -356,7 +261,7 @@ export function assertNotOwn(b, user, message = 'This is your own biodata.') {
   if (b.user.equals(user._id)) throw badRequest('OWN_BIODATA', message);
 }
 
-/** What a signed-in member sees about a biodata: lists, unlock, contact, photo and proposal. */
+/** What a signed-in member sees about a biodata: lists, unlock, contact and proposal. */
 export async function viewerState(user, biodataNo) {
   const b = await findPublic(biodataNo);
   const isOwner = b.user.equals(user._id);
@@ -377,9 +282,6 @@ export async function viewerState(user, biodataNo) {
       .lean(),
   ]);
   const unlocked = isOwner || !!unlock;
-  const visibility = b.photo?.visibility;
-  const showPhoto =
-    !!b.photo?.imageId && (isOwner || visibility === 'public' || (unlocked && visibility === 'after_unlock'));
   return {
     isOwner,
     isFavorite: !!favorite,
@@ -389,7 +291,6 @@ export async function viewerState(user, biodataNo) {
     // The connection was given back after the member's report was upheld.
     refunded: !!unlock?.refundedAt,
     report: report ? { status: report.status, ticketId: report.ticket?.toString() ?? null } : null,
-    photoUrl: showPhoto ? photoUrl(b.photo) : null,
     proposal: proposal
       ? {
           id: proposal._id,

@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { app, approvedBiodata, login, userWithAgent } from './helpers.js';
+import { app, approvedBiodata, client, login, PASSWORD, userWithAgent } from './helpers.js';
 
 describe('favorites, dislikes, proposals, reports and support', () => {
   it('manages favorites and dislikes, and hides disliked biodatas from search', async () => {
@@ -86,7 +86,7 @@ describe('favorites, dislikes, proposals, reports and support', () => {
         .status,
     ).toBe(409);
 
-    const { agent: support } = await userWithAgent({ role: 'support' });
+    const { agent: support } = await userWithAgent({ role: 'admin' });
     const list = await support.get('/api/admin/reports?status=active');
     const item = list.body.items.find((x) => x.biodata?.biodataNo === target.biodata.biodataNo);
     expect(item).toMatchObject({ reason: 'fake_info', status: 'open' });
@@ -111,7 +111,7 @@ describe('favorites, dislikes, proposals, reports and support', () => {
     expect(created.status).toBe(201);
     const id = created.body.ticket.id;
 
-    const { agent: support } = await userWithAgent({ role: 'support' });
+    const { agent: support } = await userWithAgent({ role: 'admin' });
     const reply = await support
       .post(`/api/admin/tickets/${id}/messages`)
       .send({ message: 'Please try a JPG under 5 MB.' });
@@ -141,33 +141,56 @@ describe('favorites, dislikes, proposals, reports and support', () => {
     expect(msgs.body.items[0]).not.toHaveProperty('ip');
   });
 
-  it('lets a super admin change roles and suspend users (blocking their biodata)', async () => {
+  it('lets an admin suspend users (blocking their biodata), create accounts and promote members', async () => {
     const target = await approvedBiodata({ index: 4 });
-    const { agent: admin, user: me } = await userWithAgent({ role: 'super_admin' });
+    const targetAgent = await login(target.user);
+    const { agent: admin, user: me } = await userWithAgent({ role: 'admin' });
     const sus = await admin
       .patch(`/api/admin/users/${target.user._id}`)
       .send({ status: 'suspended', statusReason: 'Fraud report' });
     expect(sus.status).toBe(200);
     expect((await request(app).get(`/api/biodatas/${target.biodata.biodataNo}`)).status).toBe(404);
+    // Suspension ends their sessions and blocks new sign-ins.
+    expect((await targetAgent.get('/api/me')).status).toBe(401);
+    const again = await client()
+      .post('/api/auth/sign-in/email')
+      .send({ email: target.user.email, password: PASSWORD });
+    expect(again.status).toBe(403);
+    expect(again.body.code).toBe('ACCOUNT_INACTIVE');
     expect((await admin.patch(`/api/admin/users/${me._id}`).send({ role: 'user' })).status).toBe(403);
 
-    const staff = await admin.post('/api/admin/users').send({
-      name: 'New Reviewer',
-      email: 'reviewer@example.com',
+    // An account created by an admin signs in through Better Auth like any other.
+    const created = await admin.post('/api/admin/users').send({
+      name: 'New Admin',
+      email: 'second-admin@example.com',
       password: 'Reviewer123',
-      role: 'support',
+      role: 'admin',
     });
-    expect(staff.status).toBe(201);
-    const { agent: support } = await userWithAgent({ role: 'support' });
-    expect(
-      (await support.patch(`/api/admin/users/${target.user._id}`).send({ status: 'active' })).status,
-    ).toBe(403);
-    const detail = await support.get(`/api/admin/users/${target.user._id}`);
+    expect(created.status).toBe(201);
+    expect(created.body.user.role).toBe('admin');
+    const second = client();
+    await second
+      .post('/api/auth/sign-in/email')
+      .send({ email: 'second-admin@example.com', password: 'Reviewer123' })
+      .expect(200);
+    expect((await second.get('/api/admin/users')).status).toBe(200);
+
+    // Promoting a member: their next request already has admin rights.
+    const { agent: member, user: m } = await userWithAgent();
+    expect((await member.get('/api/admin/overview')).status).toBe(403);
+    expect((await admin.patch(`/api/admin/users/${m._id}`).send({ role: 'admin' })).status).toBe(200);
+    // A role change signs the user out everywhere, so they sign in again.
+    expect((await member.get('/api/me')).status).toBe(401);
+    const promoted = await login(m);
+    expect((await promoted.get('/api/me')).body.user.role).toBe('admin');
+    expect((await promoted.get('/api/admin/overview')).status).toBe(200);
+
+    const detail = await admin.get(`/api/admin/users/${target.user._id}`);
     expect(detail.body.biodata.biodataNo).toBe(target.biodata.biodataNo);
   });
 
   it('serves CMS pages, FAQs and site settings', async () => {
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     await admin
       .put('/api/admin/pages/privacy-policy')
       .send({ title: { en: 'Privacy', bn: 'গোপনীয়তা' }, body: { en: 'Body', bn: 'বিবরণ' } });
@@ -184,9 +207,9 @@ describe('favorites, dislikes, proposals, reports and support', () => {
     expect(settings.body.site.name).toBe('Ghotok');
   });
 
-  it('returns analytics series for super admins', async () => {
+  it('returns analytics series for admins', async () => {
     await approvedBiodata({ index: 5 });
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const res = await admin.get('/api/admin/analytics?days=7');
     expect(res.status).toBe(200);
     expect(res.body.series).toHaveLength(7);

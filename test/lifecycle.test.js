@@ -14,7 +14,7 @@ async function submittedBiodata(index) {
 describe('review corrections and the approval gift', () => {
   it('flags answers to correct, blocks resubmission until they change, then gifts a connection once', async () => {
     const { user, agent, biodata } = await submittedBiodata(6);
-    const { agent: reviewer } = await userWithAgent({ role: 'support' });
+    const { agent: reviewer } = await userWithAgent({ role: 'admin' });
 
     const bad = await reviewer
       .post(`/api/admin/biodatas/${biodata.id}/reject`)
@@ -85,7 +85,7 @@ describe('edit suspension', () => {
   it('pauses editing until the chosen date', async () => {
     const { user, biodata } = await approvedBiodata({ index: 7 });
     const owner = await login(user);
-    const { agent: reviewer } = await userWithAgent({ role: 'support' });
+    const { agent: reviewer } = await userWithAgent({ role: 'admin' });
     const until = new Date(Date.now() + 7 * 864e5).toISOString();
 
     expect(
@@ -133,7 +133,7 @@ describe('restoring a deleted biodata', () => {
     expect(direct.body.error.code).toBe('RESTORE_NEEDS_APPROVAL');
 
     await owner.post('/api/biodatas/me/restore-request').send({ reason: 'Please' });
-    const { agent: support } = await userWithAgent({ role: 'support' });
+    const { agent: support } = await userWithAgent({ role: 'admin' });
     const queue = await support.get('/api/admin/restore-requests?status=pending');
     const request = queue.body.items.find((r) => r.biodata.biodataNo === biodata.biodataNo);
     await support

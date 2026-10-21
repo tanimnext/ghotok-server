@@ -2,14 +2,13 @@ import { z } from 'zod';
 import {
   BIODATA_SECTIONS,
   BIODATA_STATUS,
-  NID_STATUS,
   RELIGIONS,
   RESTORE_STATUS,
   ROLE_OPTIONS,
   USER_STATUS_OPTIONS,
   optionValues,
-} from '@ghotok/shared';
-import { i18nText, optionalEmail, optionalPhone, password } from './common.validation.js';
+} from '../shared/index.js';
+import { i18nText, imgbbUrl, optionalEmail, optionalPhone, password } from './common.validation.js';
 
 const list = { page: z.string().optional(), limit: z.string().optional() };
 const loose = (schema) => schema.optional().catch(undefined);
@@ -18,7 +17,6 @@ const loose = (schema) => schema.optional().catch(undefined);
 
 export const biodatasQuery = z.object({
   status: loose(z.enum(optionValues(BIODATA_STATUS))),
-  nid: loose(z.enum(optionValues(NID_STATUS))),
   type: loose(z.enum(['bride', 'groom'])),
   religion: loose(z.enum(optionValues(RELIGIONS))),
   hidden: z.string().optional(),
@@ -78,35 +76,34 @@ export const usersQuery = z.object({
   ...list,
 });
 
-/** `null` clears an email or phone number; `undefined` leaves it unchanged. */
+/** `null` clears the phone number; `undefined` leaves it unchanged. */
 const clearable = (schema) => z.union([z.null(), z.literal('').transform(() => null), schema]);
 
 export const updateUser = z.object({
   name: z.string().trim().min(2).max(80).optional(),
-  email: clearable(optionalEmail).optional(),
-  phone: clearable(optionalPhone).optional(),
+  // Every account has an email (Better Auth needs one), so it can be changed but not cleared.
+  email: optionalEmail,
+  phoneNumber: clearable(optionalPhone).optional(),
   role: z.enum(optionValues(ROLE_OPTIONS)).optional(),
   status: z.enum(optionValues(USER_STATUS_OPTIONS)).optional(),
   statusReason: z.string().trim().max(500).optional(),
   emailVerified: z.boolean().optional(),
-  phoneVerified: z.boolean().optional(),
+  phoneNumberVerified: z.boolean().optional(),
 });
 
-export const createUser = z
-  .object({
-    name: z.string().trim().min(2).max(80),
-    email: optionalEmail,
-    phone: optionalPhone,
-    password,
-    role: z.enum(optionValues(ROLE_OPTIONS)).default('support'),
-  })
-  .refine((v) => v.email || v.phone, { message: 'Enter an email or a mobile number.', path: ['email'] });
+export const createUser = z.object({
+  name: z.string().trim().min(2).max(80),
+  email: optionalEmail.refine(Boolean, 'Enter an email address.'),
+  phoneNumber: optionalPhone,
+  password,
+  role: z.enum(optionValues(ROLE_OPTIONS)).default('user'),
+});
 
 export const resetUserPassword = z.object({ password });
 
 // ----- Content and settings -----------------------------------------------------------
 
-export const settingsParams = z.object({ key: z.enum(['site', 'payments', 'stats', 'moderation']) });
+export const settingsParams = z.object({ key: z.enum(['site', 'payments', 'stats']) });
 
 export const updateSettings = z.object({
   value: z
@@ -156,35 +153,16 @@ export const updateStory = z.object({
   publishedStory: z.string().trim().max(2000).optional(),
 });
 
-const MB = 1024 * 1024;
-export const bannerUpload = z
-  .object({
-    kind: z.enum(['preview', 'file']),
-    contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
-    size: z
-      .number()
-      .int()
-      .min(1)
-      .max(10 * MB),
-  })
-  .refine((v) => (v.kind === 'file') === (v.contentType === 'application/pdf'), {
-    message: 'Upload the design as a PDF and the preview as an image.',
-    path: ['contentType'],
-  })
-  .refine((v) => v.kind === 'file' || v.size <= 5 * MB, {
-    message: 'The preview image can be at most 5 MB.',
-    path: ['size'],
-  });
-
 const bannerFields = {
   title: z.object({ en: z.string().trim().min(1).max(120), bn: z.string().trim().max(120).optional() }),
-  fileName: z.string().trim().max(120).optional(),
-  sortOrder: z.number().int().optional(),
-  isActive: z.boolean().optional(),
+  // Both images are uploaded to ImgBB from the admin panel.
+  imageUrl: imgbbUrl,
+  downloadUrl: imgbbUrl,
+  sortOrder: z.number().int(),
+  isActive: z.boolean(),
 };
-export const createBanner = z.object({
-  ...bannerFields,
-  previewTicket: z.string().min(10),
-  fileTicket: z.string().min(10),
-});
+// The download defaults to the preview image when only one is given.
+export const createBanner = z
+  .object(bannerFields)
+  .partial({ downloadUrl: true, sortOrder: true, isActive: true });
 export const updateBanner = z.object(bannerFields).partial();

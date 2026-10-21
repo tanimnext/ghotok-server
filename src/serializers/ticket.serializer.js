@@ -1,5 +1,7 @@
 import { toUserSummary } from './user.serializer.js';
 
+const toAttachmentDTO = (a) => ({ url: a.url, type: 'image' });
+
 const SUPPORT_NAME = 'Ghotok support';
 
 /** A ticket as its owner sees it. Staff names are hidden behind "Ghotok support". */
@@ -26,7 +28,7 @@ export function toTicketDTO(t, { withMessages = false } = {}) {
             staff: m.staff,
             author: { name: m.staff ? SUPPORT_NAME : (m.author?.name ?? '') },
             body: m.body,
-            attachments: m.attachments ?? [],
+            attachments: (m.attachments ?? []).map(toAttachmentDTO),
             createdAt: m.createdAt,
           })),
         }
@@ -43,7 +45,7 @@ export function toStaffTicketDTO(t, { withMessages = false } = {}) {
       staff: m.staff,
       author: { name: m.author?.name ?? 'Unknown' },
       body: m.body,
-      attachments: m.attachments ?? [],
+      attachments: (m.attachments ?? []).map(toAttachmentDTO),
       createdAt: m.createdAt,
     }));
   }

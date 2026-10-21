@@ -1,13 +1,12 @@
 // Seeds the database.
-//   npm run seed        → super admin, packages, pages and FAQs (safe to run repeatedly)
+//   npm run seed        → the first admin, packages, pages and FAQs (safe to run repeatedly)
 //   npm run seed:demo   → the above plus demo users, biodatas, payments and support data
 //
 // Demo data is for local development only. Never run --demo against production.
 
-import { validateBiodata } from '@ghotok/shared';
+import { validateBiodata } from '../shared/index.js';
 import { env, isProd } from '../config/env.js';
 import { connectDb, disconnectDb } from '../config/db.js';
-import { hashPassword } from '../utils/crypto.js';
 import {
   Biodata,
   ContactMessage,
@@ -24,6 +23,7 @@ import {
   nextSequence,
 } from '../models/index.js';
 import { changeBalance } from '../services/connection.service.js';
+import { createPasswordAccount } from '../services/credentials.service.js';
 import { FAQS, PACKAGES, PAGES } from './seed-data/content.js';
 import { PEOPLE, demoSections } from './seed-data/demo-people.js';
 
@@ -32,16 +32,17 @@ const log = (...a) => console.log('•', ...a);
 export async function seedBase() {
   let admin = await User.findOne({ email: env.SEED_ADMIN_EMAIL.toLowerCase() });
   if (!admin) {
-    admin = await User.create({
+    // Every other account starts as "user"; this one is made an admin directly.
+    admin = await createPasswordAccount({
       name: env.SEED_ADMIN_NAME,
-      email: env.SEED_ADMIN_EMAIL.toLowerCase(),
-      passwordHash: await hashPassword(env.SEED_ADMIN_PASSWORD),
-      role: 'super_admin',
-      emailVerified: true,
+      email: env.SEED_ADMIN_EMAIL,
+      password: env.SEED_ADMIN_PASSWORD,
+      role: 'admin',
+      verified: true,
     });
-    log(`Super admin created: ${admin.email} (change the password after first login)`);
+    log(`Admin created: ${admin.email} (change the password after first login)`);
   } else {
-    log(`Super admin exists: ${admin.email}`);
+    log(`Admin exists: ${admin.email} (role: ${admin.role})`);
   }
 
   if (!(await Package.exists({}))) {
@@ -69,15 +70,15 @@ async function seedDemo(admin) {
     log('Demo data already present, skipping.');
     return;
   }
-  const passwordHash = await hashPassword('Demo@12345');
+  const password = 'Demo@12345';
   const users = [];
   for (const [i, person] of PEOPLE.entries()) {
-    const user = await User.create({
+    const user = await createPasswordAccount({
       name: person[9],
       email: `demo${i + 1}@example.com`,
-      phone: `018${String(20000000 + i * 104729).slice(0, 8)}`,
-      passwordHash,
-      emailVerified: true,
+      phoneNumber: `018${String(20000000 + i * 104729).slice(0, 8)}`,
+      password,
+      verified: true,
     });
     users.push(user);
     const sections = demoSections(person, i);
@@ -99,22 +100,18 @@ async function seedDemo(admin) {
             reviewedBy: admin._id,
           }
         : {}),
-      nid:
-        i % 3 === 0
-          ? { status: 'verified', submittedAt: new Date(), reviewedAt: new Date(), reviewedBy: admin._id }
-          : { status: 'not_submitted' },
       stats: { views: 40 + ((i * 37) % 300) },
     });
   }
   log(`Demo biodatas created: ${PEOPLE.length} (password for every demo account: Demo@12345)`);
 
   // A ready-to-use member account with a few connections and some history.
-  const member = await User.create({
+  const member = await createPasswordAccount({
     name: 'Demo Member',
     email: 'member@example.com',
-    phone: '01911000000',
-    passwordHash,
-    emailVerified: true,
+    phoneNumber: '01911000000',
+    password,
+    verified: true,
   });
   const pkg = await Package.findOne({ connections: 5 });
   const verified = await Payment.create({
@@ -140,14 +137,6 @@ async function seedDemo(admin) {
     reason: verified.invoiceNo,
   });
 
-  const support = await User.create({
-    name: 'Support Reviewer',
-    email: 'support@example.com',
-    passwordHash,
-    role: 'support',
-    emailVerified: true,
-  });
-
   // Payments waiting for verification.
   for (const [i, u] of users.slice(0, 3).entries()) {
     const p = i % 2 ? await Package.findOne({ connections: 3 }) : pkg;
@@ -160,7 +149,7 @@ async function seedDemo(admin) {
       amount: p.price,
       method: ['bkash', 'nagad', 'rocket'][i],
       mode: 'manual',
-      senderNumber: u.phone,
+      senderNumber: u.phoneNumber,
       trxId: `DEMO${i}TRX${i + 7}A`,
       status: 'pending',
     });
@@ -249,7 +238,7 @@ async function seedDemo(admin) {
   });
 
   log('Demo member: member@example.com / Demo@12345 (5 connections)');
-  log(`Demo support reviewer: ${support.email} / Demo@12345`);
+  log(`Admin: ${admin.email} (password from SEED_ADMIN_PASSWORD)`);
 }
 
 async function main() {

@@ -1,4 +1,4 @@
-import { biodataCompletion } from '@ghotok/shared';
+import { biodataCompletion } from '../shared/index.js';
 import { User } from '../models/index.js';
 import * as biodataService from '../services/biodata.service.js';
 import { unlockContact } from '../services/connection.service.js';
@@ -65,30 +65,6 @@ export async function stats(req, res) {
   res.json(await biodataService.ownStats(req.user._id));
 }
 
-export async function photoUploadUrl(req, res) {
-  res.json(await biodataService.createPhotoUpload(req.user._id));
-}
-
-export async function attachPhoto(req, res) {
-  res.json(ownerView(await biodataService.attachPhoto(req.user._id, req.body)));
-}
-
-export async function setPhotoVisibility(req, res) {
-  res.json(ownerView(await biodataService.setPhotoVisibility(req.user._id, req.body.visibility)));
-}
-
-export async function removePhoto(req, res) {
-  res.json(ownerView(await biodataService.removePhoto(req.user._id)));
-}
-
-export async function nidUploadUrl(req, res) {
-  res.json(await biodataService.createNidUpload(req.user._id, req.body));
-}
-
-export async function submitNid(req, res) {
-  res.json(ownerView(await biodataService.submitNid(req.user._id, req.body)));
-}
-
 // ----- Public biodatas -----------------------------------------------------------------
 
 /**
@@ -120,7 +96,7 @@ export async function featured(req, res) {
 
 export async function getPublic(req, res) {
   const biodata = await biodataService.findPublic(req.params.no);
-  const owner = await User.findById(biodata.user).select('emailVerified phoneVerified').lean();
+  const owner = await User.findById(biodata.user).select('email emailVerified phoneNumberVerified').lean();
   res.json({ biodata: toPublicDetail(biodata, owner) });
 }
 

@@ -1,13 +1,6 @@
 import { z } from 'zod';
-import {
-  DELETE_REASONS,
-  HIDE_REASONS,
-  PHOTO_VISIBILITY,
-  REPORT_REASONS,
-  SECTION_KEYS,
-  optionValues,
-} from '@ghotok/shared';
-import { ALLOWED_IMAGE_TYPES } from '../integrations/storage/index.js';
+import { DELETE_REASONS, HIDE_REASONS, REPORT_REASONS, SECTION_KEYS, optionValues } from '../shared/index.js';
+import { imageAttachments } from './common.validation.js';
 
 // Section contents are validated by the shared form schema (validateSection), not here.
 
@@ -79,26 +72,12 @@ export const deleteBiodata = z.object({
 
 export const restoreRequest = z.object({ reason: z.string().trim().max(1000).optional() });
 
-export const attachPhoto = z.object({
-  ticket: z.string().min(10),
-  visibility: z.enum(optionValues(PHOTO_VISIBILITY)).optional(),
-});
-
-export const photoVisibility = z.object({ visibility: z.enum(optionValues(PHOTO_VISIBILITY)) });
-
-export const nidUploadUrl = z.object({
-  side: z.enum(['front', 'back']),
-  contentType: z.enum(ALLOWED_IMAGE_TYPES),
-});
-
-export const submitNid = z.object({ frontTicket: z.string().min(10), backTicket: z.string().min(10) });
-
 export const proposal = z.object({ message: z.string().trim().max(1000).optional() });
 
 export const report = z.object({
   reason: z.enum(optionValues(REPORT_REASONS)),
   details: z.string().trim().max(2000).optional(),
-  attachments: z.array(z.string().min(10)).max(5).optional(),
+  attachments: imageAttachments,
 });
 
 const text = z.string().trim().max(200).optional();
@@ -124,7 +103,6 @@ export const searchQuery = z.object({
   heightMin: text,
   heightMax: text,
   education: text,
-  nid: text,
   q: text,
   sort: text,
   page: text,

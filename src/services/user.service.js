@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { can, isValidEmail, isValidPhone, normalizePhone } from '@ghotok/shared';
+import { can, isValidEmail, isValidPhone, normalizePhone } from '../shared/index.js';
 import {
   Biodata,
   ConnectionTransaction,
@@ -11,15 +11,14 @@ import {
 } from '../models/index.js';
 import { toAdminRow } from '../serializers/biodata.serializer.js';
 import { toUserDTO } from '../serializers/user.serializer.js';
-import { badRequest, conflict, forbidden, notFound } from '../utils/api-error.js';
-import { hashPassword } from '../utils/crypto.js';
+import { conflict, forbidden, notFound } from '../utils/api-error.js';
 import { pageParams, paged } from '../utils/pagination.js';
 import { escapeRegex } from '../utils/strings.js';
 import { recordAudit } from './audit.service.js';
 import { notify } from './notification.service.js';
-import { revokeAllSessions } from './token.service.js';
+import { createPasswordAccount, revokeAllSessions, setPassword } from './credentials.service.js';
 
-// Staff management of accounts: search, roles, suspension, staff creation.
+// Admin management of accounts: search, roles, suspension, account creation.
 
 const INACTIVE = ['suspended', 'banned'];
 
@@ -29,23 +28,23 @@ export async function findUserByAny(ref) {
   let user = null;
   if (mongoose.isValidObjectId(s)) user = await User.findById(s);
   else if (isValidEmail(s)) user = await User.findOne({ email: s.toLowerCase() });
-  else if (isValidPhone(s)) user = await User.findOne({ phone: normalizePhone(s) });
+  else if (isValidPhone(s)) user = await User.findOne({ phoneNumber: normalizePhone(s) });
   if (!user) throw notFound('User');
   return user;
 }
 
 export async function listUsers({ q, role, status, verified }, query) {
   const filter = {};
-  if (role === 'staff') filter.role = { $in: ['support', 'super_admin'] };
+  if (role === 'staff') filter.role = 'admin';
   else if (role) filter.role = role;
   if (status) filter.status = status;
   if (verified === 'false') {
     filter.emailVerified = { $ne: true };
-    filter.phoneVerified = { $ne: true };
+    filter.phoneNumberVerified = { $ne: true };
   }
   if (q) {
     const re = new RegExp(escapeRegex(q), 'i');
-    filter.$or = [{ name: re }, { email: re }, { phone: re }];
+    filter.$or = [{ name: re }, { email: re }, { phoneNumber: re }];
     const byNumber = await Biodata.findOne({ biodataNo: q.toUpperCase() }).select('user');
     if (byNumber) filter.$or.push({ _id: byNumber.user });
   }
@@ -133,21 +132,17 @@ export async function updateUser(id, data, ctx) {
     throw forbidden('SELF_STATUS', 'You cannot suspend your own account.');
   if (data.role && data.role !== user.role && !can(ctx.actor.role, 'roles.assign')) throw forbidden();
 
-  if (data.email !== undefined) {
+  if (data.email) {
     await assertUnique('email', data.email, user._id);
-    user.email = data.email ?? undefined;
+    user.email = data.email;
   }
-  if (data.phone !== undefined) {
-    await assertUnique('phone', data.phone, user._id);
-    user.phone = data.phone ?? undefined;
-  }
-  if (!user.email && !user.phone) {
-    throw badRequest('VALIDATION_ERROR', 'An account needs an email or a mobile number.', {
-      fields: { email: 'required' },
-    });
+  if (data.phoneNumber !== undefined) {
+    await assertUnique('phoneNumber', data.phoneNumber, user._id);
+    user.phoneNumber = data.phoneNumber ?? undefined;
+    if (!data.phoneNumber) user.phoneNumberVerified = false;
   }
   const before = { role: user.role, status: user.status };
-  for (const key of ['name', 'role', 'status', 'statusReason', 'emailVerified', 'phoneVerified']) {
+  for (const key of ['name', 'role', 'status', 'statusReason', 'emailVerified', 'phoneNumberVerified']) {
     if (data[key] !== undefined) user[key] = data[key];
   }
   await user.save();
@@ -180,21 +175,13 @@ export async function updateUser(id, data, ctx) {
   return toUserDTO(user);
 }
 
-/** Creates an account from the admin panel (usually a staff member). It is treated as verified. */
-export async function createUser({ name, email, phone, password, role }, ctx) {
+/** Creates an email + password account from the admin panel. It is treated as verified. */
+export async function createUser({ name, email, phoneNumber, password, role }, ctx) {
   if (role !== 'user' && !can(ctx.actor.role, 'roles.assign')) throw forbidden();
-  const or = [email && { email }, phone && { phone }].filter(Boolean);
+  const or = [{ email }, phoneNumber && { phoneNumber }].filter(Boolean);
   if (await User.exists({ $or: or }))
     throw conflict('ACCOUNT_EXISTS', 'An account with this email or mobile number already exists.');
-  const user = await User.create({
-    name,
-    email,
-    phone,
-    role,
-    passwordHash: await hashPassword(password),
-    emailVerified: !!email,
-    phoneVerified: !!phone,
-  });
+  const user = await createPasswordAccount({ name, email, phoneNumber, password, role, verified: true });
   await recordAudit(ctx, 'user.create', {
     targetType: 'user',
     targetId: user._id,
@@ -206,9 +193,7 @@ export async function createUser({ name, email, phone, password, role }, ctx) {
 export async function resetUserPassword(id, password, ctx) {
   const user = await User.findById(id);
   if (!user) throw notFound('User');
-  user.passwordHash = await hashPassword(password);
-  await user.save();
-  await revokeAllSessions(user._id);
+  await setPassword(user._id, password);
   await notify(user._id, 'password_reset_by_staff', {});
   await recordAudit(ctx, 'user.reset_password', {
     targetType: 'user',

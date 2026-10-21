@@ -1,4 +1,4 @@
-import { DISTRICTS } from '@ghotok/shared';
+import { DISTRICTS } from '../shared/index.js';
 import { MarriageReport } from '../models/index.js';
 import { toUserSummary } from '../serializers/user.serializer.js';
 import { conflict, notFound } from '../utils/api-error.js';
@@ -35,7 +35,7 @@ export function listMarriageReports({ status }, query) {
   return paginate(
     MarriageReport.find(filter)
       .sort({ createdAt: -1 })
-      .populate('user', 'name email phone role status')
+      .populate('user', 'name email phoneNumber role status')
       .populate('biodata', 'biodataNo district')
       .populate('partnerBiodata', 'biodataNo')
       .lean(),

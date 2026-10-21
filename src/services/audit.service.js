@@ -32,7 +32,10 @@ export function listAuditLogs({ action, targetId }, params) {
   if (action) filter.action = new RegExp(`^${escapeRegex(action)}`);
   if (targetId) filter.targetId = targetId;
   return paginate(
-    AuditLog.find(filter).sort({ createdAt: -1 }).populate('actor', 'name email phone role status').lean(),
+    AuditLog.find(filter)
+      .sort({ createdAt: -1 })
+      .populate('actor', 'name email phoneNumber role status')
+      .lean(),
     AuditLog.countDocuments(filter),
     params,
     (a) => ({

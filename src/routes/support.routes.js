@@ -10,13 +10,6 @@ const router = Router();
 
 router.get('/tickets', requireAuth, support.list);
 router.post('/tickets', requireAuth, writeLimiter, validate({ body: schema.createTicket }), support.create);
-router.post(
-  '/tickets/attachments/upload-url',
-  requireAuth,
-  writeLimiter,
-  validate({ body: schema.attachmentUpload }),
-  support.attachmentUploadUrl,
-);
 router.get('/tickets/:id', requireAuth, validate({ params: idParams }), support.get);
 router.post(
   '/tickets/:id/messages',

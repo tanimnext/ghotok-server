@@ -1,4 +1,3 @@
-import { photoUrl } from '../integrations/storage/index.js';
 import { logger } from '../config/logger.js';
 import { Biodata, ConnectionTransaction, ContactUnlock, Payment, User } from '../models/index.js';
 import { toContact } from '../serializers/biodata.serializer.js';
@@ -124,13 +123,11 @@ export async function unlockContact(user, biodataNo) {
   assertNotOwn(b, user);
   const result = await unlockOnce(user, b);
   if (result.charged) await notify(b.user, 'contact_unlocked', { biodataNo: b.biodataNo });
-  const showPhoto = !!b.photo?.imageId && b.photo.visibility !== 'hidden';
   return {
     unlocked: true,
     charged: result.charged,
     balance: result.balance,
     contact: toContact(b),
-    photoUrl: showPhoto ? photoUrl(b.photo) : null,
   };
 }
 
@@ -216,7 +213,7 @@ export async function listLedger({ user, type }, query) {
   return paginate(
     ConnectionTransaction.find(filter)
       .sort({ createdAt: -1 })
-      .populate('user', 'name email phone role status')
+      .populate('user', 'name email phoneNumber role status')
       .populate('actor', 'name')
       .populate('biodata', 'biodataNo')
       .populate('payment', 'invoiceNo')

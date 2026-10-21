@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { LEDGER_TYPES, optionValues } from '@ghotok/shared';
+import { LEDGER_TYPES, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 

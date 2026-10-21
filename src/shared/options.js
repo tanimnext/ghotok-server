@@ -5,14 +5,14 @@ const BN_DIGITS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮'
 
 export const ROLES = Object.freeze({
   USER: 'user',
-  SUPPORT: 'support',
-  SUPER_ADMIN: 'super_admin',
+  ADMIN: 'admin',
 });
 
+// Every account starts as "user". Someone becomes an admin only when their role is
+// changed to "admin" in the database (or by another admin in the admin panel).
 export const ROLE_OPTIONS = [
-  { value: 'user', en: 'Registered user', bn: 'নিবন্ধিত ব্যবহারকারী' },
-  { value: 'support', en: 'Support & reviewer', bn: 'সাপোর্ট ও রিভিউয়ার' },
-  { value: 'super_admin', en: 'Super admin', bn: 'সুপার অ্যাডমিন' },
+  { value: 'user', en: 'Member', bn: 'সদস্য' },
+  { value: 'admin', en: 'Admin', bn: 'অ্যাডমিন' },
 ];
 
 export const USER_STATUS_OPTIONS = [
@@ -144,12 +144,6 @@ export const GUARDIAN_RELATIONS = [
   { value: 'other', en: 'Other relative', bn: 'অন্যান্য আত্মীয়' },
 ];
 
-export const PHOTO_VISIBILITY = [
-  { value: 'after_unlock', en: 'Only to people who unlock my contact', bn: 'শুধু যারা যোগাযোগ আনলক করেছেন' },
-  { value: 'public', en: 'Everyone', bn: 'সবাই' },
-  { value: 'hidden', en: 'Nobody', bn: 'কেউ না' },
-];
-
 // Heights from 4'0" to 7'0", stored in inches.
 export const HEIGHTS = Array.from({ length: 37 }, (_, i) => {
   const inches = 48 + i;
@@ -164,13 +158,6 @@ export const BIODATA_STATUS = [
   { value: 'pending', en: 'Under review', bn: 'রিভিউ চলছে' },
   { value: 'approved', en: 'Approved', bn: 'অনুমোদিত' },
   { value: 'rejected', en: 'Needs changes', bn: 'সংশোধন প্রয়োজন' },
-];
-
-export const NID_STATUS = [
-  { value: 'not_submitted', en: 'Not submitted', bn: 'জমা হয়নি' },
-  { value: 'pending', en: 'Pending verification', bn: 'যাচাইয়ের অপেক্ষায়' },
-  { value: 'verified', en: 'NID verified', bn: 'এনআইডি যাচাইকৃত' },
-  { value: 'rejected', en: 'Rejected', bn: 'প্রত্যাখ্যাত' },
 ];
 
 /** Situations a member may choose to disclose so families looking for them can filter on it. */

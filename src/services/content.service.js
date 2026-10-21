@@ -1,5 +1,5 @@
+import { env } from '../config/env.js';
 import { Biodata, Faq, PUBLIC_FILTER, Page } from '../models/index.js';
-import { google } from '../integrations/oauth/google.js';
 import { gateways } from '../integrations/payments/index.js';
 import { notFound } from '../utils/api-error.js';
 import { recordAudit } from './audit.service.js';
@@ -45,7 +45,8 @@ export async function publicSettings() {
       approvedDiscountPercent: payments.approvedDiscountPercent,
       gateways: Object.keys(gateways).filter((m) => gateways[m].enabled),
     },
-    auth: { google: google.enabled },
+    // Sign-in options the client should offer (Better Auth handles Google itself).
+    auth: { google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) },
   };
 }
 

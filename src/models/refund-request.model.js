@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { REFUND_RESOLUTIONS, REFUND_STATUS, optionValues } from '@ghotok/shared';
+import { REFUND_RESOLUTIONS, REFUND_STATUS, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 

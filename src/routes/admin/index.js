@@ -5,7 +5,7 @@ import * as content from '../../controllers/admin/content.controller.js';
 import * as insights from '../../controllers/admin/insights.controller.js';
 import * as moderation from '../../controllers/admin/moderation.controller.js';
 import * as users from '../../controllers/admin/user.controller.js';
-import { requireAuth, requirePermission as can } from '../../middlewares/auth.js';
+import { requireAdmin, requirePermission as can } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import * as admin from '../../validations/admin.validation.js';
 import { idParams } from '../../validations/common.validation.js';
@@ -13,10 +13,10 @@ import { sectionParams, saveSection } from '../../validations/biodata.validation
 import * as pay from '../../validations/payment.validation.js';
 import * as support from '../../validations/support.validation.js';
 
-// The admin panel API: /api/admin. Every route needs a staff account, and each one
-// names the permission it requires (see shared/src/permissions.js).
+// The admin panel API: /api/admin. Every route needs an admin account (role "admin");
+// each one also names the permission it requires (see shared/permissions.js).
 const router = Router();
-router.use(requireAuth, can('admin.access'));
+router.use(requireAdmin);
 
 const id = validate({ params: idParams });
 
@@ -30,7 +30,7 @@ router.get(
 );
 router.get('/audit-logs', can('audit.view'), validate({ query: admin.auditQuery }), insights.auditLogs);
 
-// Biodatas: review queue, edits, visibility, NID, recovery queue
+// Biodatas: review queue, edits, visibility, recovery queue
 router.get('/biodatas', can('biodata.review'), validate({ query: admin.biodatasQuery }), biodata.list);
 router.get('/biodatas/:id', can('biodata.review'), id, biodata.get);
 router.post('/biodatas/:id/approve', can('biodata.review'), id, biodata.approve);
@@ -74,21 +74,6 @@ router.post(
   id,
   validate({ body: admin.note }),
   biodata.restore,
-);
-router.get('/biodatas/:id/nid', can('nid.verify'), id, biodata.nidDocuments);
-router.post(
-  '/biodatas/:id/nid/verify',
-  can('nid.verify'),
-  id,
-  validate({ body: admin.note }),
-  biodata.verifyNid,
-);
-router.post(
-  '/biodatas/:id/nid/reject',
-  can('nid.verify'),
-  id,
-  validate({ body: admin.note }),
-  biodata.rejectNid,
 );
 router.get(
   '/restore-requests',
@@ -238,12 +223,6 @@ router.patch(
   content.updateStory,
 );
 router.get('/banners', can('content.manage'), content.banners);
-router.post(
-  '/banners/upload-url',
-  can('content.manage'),
-  validate({ body: admin.bannerUpload }),
-  content.bannerUploadUrl,
-);
 router.post('/banners', can('content.manage'), validate({ body: admin.createBanner }), content.createBanner);
 router.patch(
   '/banners/:id',

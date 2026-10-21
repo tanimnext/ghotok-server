@@ -16,7 +16,7 @@ function redirectToReceipt(res, { status, invoiceNo }) {
   const target = invoiceNo
     ? `/dashboard/payment/${encodeURIComponent(invoiceNo)}?result=${status}`
     : `/dashboard/connections?payment=${status}`;
-  res.redirect(303, `${env.WEB_URL}${target}`);
+  res.redirect(303, `${env.CLIENT_URL}${target}`);
 }
 
 /** bKash / Nagad send the customer back here (GET); we finish the payment and redirect. */

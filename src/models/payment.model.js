@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { PAYMENT_METHODS, PAYMENT_STATUS, optionValues } from '@ghotok/shared';
+import { PAYMENT_METHODS, PAYMENT_STATUS, optionValues } from '../shared/index.js';
 
 const { Schema } = mongoose;
 

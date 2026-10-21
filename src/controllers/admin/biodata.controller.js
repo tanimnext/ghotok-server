@@ -37,18 +37,6 @@ export async function restore(req, res) {
   res.json({ biodata: await review.restoreBiodata(req.params.id, req.body?.note, ctx(req)) });
 }
 
-export async function nidDocuments(req, res) {
-  res.json(await review.nidDocuments(req.params.id, ctx(req)));
-}
-
-export async function verifyNid(req, res) {
-  res.json({ biodata: await review.decideNid(req.params.id, 'verified', req.body?.note, ctx(req)) });
-}
-
-export async function rejectNid(req, res) {
-  res.json({ biodata: await review.decideNid(req.params.id, 'rejected', req.body?.note, ctx(req)) });
-}
-
 export async function restoreRequests(req, res) {
   res.json(await review.listRestoreRequests(req.query, req.query));
 }

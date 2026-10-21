@@ -5,12 +5,10 @@ import {
   DELETE_REASONS,
   EDUCATION_LEVELS,
   HIDE_REASONS,
-  NID_STATUS,
-  PHOTO_VISIBILITY,
   biodataCompletion,
   divisionOf,
   optionValues,
-} from '@ghotok/shared';
+} from '../shared/index.js';
 
 const { Schema } = mongoose;
 
@@ -82,22 +80,6 @@ const biodataSchema = new Schema(
     deletedAt: { type: Date, default: null, index: true },
     deleteReason: { type: String, enum: [...optionValues(DELETE_REASONS), null] },
     deleteNote: { type: String, maxlength: 500 },
-
-    photo: {
-      imageId: String,
-      storage: { type: String, enum: ['local', 'cloudflare'] },
-      visibility: { type: String, enum: optionValues(PHOTO_VISIBILITY), default: 'after_unlock' },
-    },
-
-    nid: {
-      status: { type: String, enum: optionValues(NID_STATUS), default: 'not_submitted', index: true },
-      frontKey: String,
-      backKey: String,
-      submittedAt: Date,
-      reviewedAt: Date,
-      reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-      note: { type: String, maxlength: 500 },
-    },
 
     stats: {
       views: { type: Number, default: 0 },

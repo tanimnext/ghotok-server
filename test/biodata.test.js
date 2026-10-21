@@ -52,17 +52,6 @@ describe('biodata lifecycle', () => {
     expect(pub.status).toBe(404);
   });
 
-  it('requires a verified account to create a biodata', async () => {
-    const { createUser } = await import('./helpers.js');
-    const { signAccessToken } = await import('../src/services/token.service.js');
-    const user = await createUser({ verified: false });
-    const res = await request(app)
-      .post('/api/biodatas/me')
-      .set('Authorization', `Bearer ${signAccessToken(user)}`);
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('NOT_VERIFIED');
-  });
-
   it('never exposes private fields publicly and lets reviewers approve', async () => {
     const { agent: owner } = await userWithAgent();
     await owner.post('/api/biodatas/me').send({ pledge: true });
@@ -71,7 +60,7 @@ describe('biodata lifecycle', () => {
     const { body } = await owner.post('/api/biodatas/me/submit');
     const no = body.biodata.biodataNo;
 
-    const { agent: support } = await userWithAgent({ role: 'support' });
+    const { agent: support } = await userWithAgent({ role: 'admin' });
     const list = await support.get('/api/admin/biodatas?status=pending');
     expect(list.status).toBe(200);
     const row = list.body.items.find((b) => b.biodataNo === no);
@@ -98,7 +87,7 @@ describe('biodata lifecycle', () => {
     for (const [key, data] of Object.entries(demoSections(PEOPLE[2], 2)))
       await agent.put(`/api/biodatas/me/sections/${key}`).send({ data });
     await agent.post('/api/biodatas/me/submit');
-    const { user: reviewer } = await userWithAgent({ role: 'super_admin' });
+    const { user: reviewer } = await userWithAgent({ role: 'admin' });
     const { Biodata } = await import('../src/models/index.js');
     const b = await Biodata.findOne({ status: 'pending' }).sort({ createdAt: -1 });
     b.status = 'approved';
@@ -115,7 +104,7 @@ describe('biodata lifecycle', () => {
 
   it('rejects with a reason the owner can read', async () => {
     const { biodata, user } = await approvedBiodata({ index: 3, status: 'pending' });
-    const { agent: admin } = await userWithAgent({ role: 'super_admin' });
+    const { agent: admin } = await userWithAgent({ role: 'admin' });
     const res = await admin
       .post(`/api/admin/biodatas/${biodata._id}/reject`)
       .send({ reason: 'Please add your SSC details.' });
@@ -185,7 +174,7 @@ describe('biodata lifecycle', () => {
     expect(req1.status).toBe(201);
     expect((await owner.post('/api/biodatas/me/restore-request').send({})).status).toBe(409);
 
-    const { agent: support } = await userWithAgent({ role: 'support' });
+    const { agent: support } = await userWithAgent({ role: 'admin' });
     const queue = await support.get('/api/admin/restore-requests?status=pending');
     const item = queue.body.items.find((r) => r.biodata.biodataNo === no);
     expect(item).toBeTruthy();

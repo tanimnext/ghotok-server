@@ -1,19 +1,9 @@
-import { Biodata, Proposal, User } from '../models/index.js';
+import { Biodata, Proposal } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
-import { hashPassword, verifyPassword } from '../utils/crypto.js';
-import { revokeAllSessions, revokeOtherSessions } from './token.service.js';
+import { checkPassword, hasPassword, revokeAllSessions } from './credentials.service.js';
 
-// A member managing their own account.
-
-async function assertPassword(userId, password, field) {
-  const user = await User.findById(userId).select('+passwordHash');
-  if (!(await verifyPassword(password, user.passwordHash))) {
-    throw new ApiError(400, 'WRONG_PASSWORD', 'The password is incorrect.', {
-      fields: { [field]: 'invalid' },
-    });
-  }
-  return user;
-}
+// A member managing their own account. Passwords, sessions and sign-in methods are
+// changed through Better Auth's endpoints (/api/auth/*) from the client.
 
 export async function updateProfile(user, { name, language }) {
   if (name !== undefined) user.name = name;
@@ -22,23 +12,16 @@ export async function updateProfile(user, { name, language }) {
   return user;
 }
 
-/** Changes the password and signs out every device (the caller signs the current one back in). */
 /**
- * Changes the password and signs out every other device (this one, identified by
- * `keepFamily`, stays signed in).
- * @returns {Promise<{ user: object, signedOut: number }>}
+ * Deactivates the account: removes the biodata, withdraws proposals and signs out
+ * everywhere. Accounts with a password must confirm it; signing in again reactivates.
  */
-export async function changePassword(userId, { currentPassword, newPassword }, keepFamily) {
-  const user = await assertPassword(userId, currentPassword, 'currentPassword');
-  user.passwordHash = await hashPassword(newPassword);
-  await user.save();
-  const signedOut = await revokeOtherSessions(user._id, keepFamily);
-  return { user, signedOut };
-}
-
-/** Deactivates the account: hides the biodata, withdraws proposals and signs out everywhere. */
-export async function deactivate(userId, { password, reason }) {
-  const user = await assertPassword(userId, password, 'password');
+export async function deactivate(user, { password, reason }) {
+  if ((await hasPassword(user._id)) && !(password && (await checkPassword(user._id, password)))) {
+    throw new ApiError(400, 'WRONG_PASSWORD', 'The password is incorrect.', {
+      fields: { password: 'invalid' },
+    });
+  }
   user.status = 'deactivated';
   user.deactivatedAt = new Date();
   user.statusReason = reason;

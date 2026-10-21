@@ -17,8 +17,6 @@ export const NOTIFICATION_TYPES = Object.freeze([
   'refund_approved',
   'refund_rejected',
   'ticket_replied',
-  'nid_verified',
-  'nid_rejected',
   'restore_approved',
   'restore_declined',
   'connections_adjusted',

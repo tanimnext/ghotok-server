@@ -58,10 +58,6 @@ export async function banners(_req, res) {
   res.json({ items: await bannerService.listBanners() });
 }
 
-export async function bannerUploadUrl(req, res) {
-  res.json(await bannerService.createBannerUpload(req.user._id, req.body));
-}
-
 export async function createBanner(req, res) {
   res.status(201).json({ banner: await bannerService.createBanner(req.body, ctx(req)) });
 }
