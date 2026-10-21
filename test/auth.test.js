@@ -32,8 +32,14 @@ describe('sign-up and roles', () => {
     expect(me.body.user).toMatchObject({ role: 'user', email: 'rina@example.com', isVerified: false });
 
     // update-user cannot change the role either.
-    await agent.post('/api/auth/update-user').send({ role: 'admin', connectionBalance: 5 });
-    expect((await User.findById(ok.body.user.id)).role).toBe('user');
+    const sneaky = await agent.post('/api/auth/update-user').send({ role: 'admin', connectionBalance: 5 });
+    expect(sneaky.status).toBe(400);
+    await agent.post('/api/auth/update-user').send({ language: 'bn' }).expect(200);
+    expect((await agent.get('/api/me')).body.user).toMatchObject({
+      role: 'user',
+      connectionBalance: 0,
+      language: 'bn',
+    });
 
     // The same email cannot register twice.
     const dup = await client()
@@ -153,7 +159,14 @@ describe('sessions', () => {
     // Signing up also opened a session, so there are three.
     expect(list.body).toHaveLength(3);
 
+    // Sign one device out by its token.
+    const phoneToken = (await phone.get('/api/auth/get-session')).body.session.token;
+    await laptop.post('/api/auth/revoke-session').send({ token: phoneToken }).expect(200);
+    expect((await phone.get('/api/me')).status).toBe(401);
+    const tv = await login(user);
+
     await laptop.post('/api/auth/revoke-other-sessions').send({}).expect(200);
+    expect((await tv.get('/api/me')).status).toBe(401);
     expect((await phone.get('/api/me')).status).toBe(401);
     expect((await laptop.get('/api/me')).status).toBe(200);
 

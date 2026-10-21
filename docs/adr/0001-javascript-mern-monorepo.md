@@ -1,6 +1,6 @@
 # 0001. A JavaScript MERN monorepo with shared packages
 
-Status: Accepted
+Status: Superseded by [0006](0006-separate-repos-and-better-auth.md)
 
 ## Context
 

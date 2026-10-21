@@ -1,7 +1,3 @@
 node_modules
-.next
-dist
 coverage
 package-lock.json
-server/uploads
-*.md

@@ -1,6 +1,6 @@
 # 0003. Same-origin API with cookie sessions and rotating refresh tokens
 
-Status: Accepted
+Status: Superseded by [0006](0006-separate-repos-and-better-auth.md)
 
 ## Context
 
