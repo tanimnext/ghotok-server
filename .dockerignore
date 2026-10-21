@@ -1,0 +1,13 @@
+# Keep build contexts small and free of local state and secrets.
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/.env
+**/.env.*
+!**/.env.example
+server/uploads
+uploads
+.git
+.github
+*.log
