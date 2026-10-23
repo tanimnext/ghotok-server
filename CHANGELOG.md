@@ -6,6 +6,26 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Sign-up, sign-in and payments moved to the website (ghotok-client).** This API no longer
+  runs Better Auth or SSLCommerz. It reads the website's Better Auth session: the
+  `ghotok.session_token` cookie is checked with the shared `BETTER_AUTH_SECRET` and looked up in
+  the `session` collection of the same MongoDB database. See decision record 0009.
+- Only email + password accounts: one-time codes, SMS, Google sign-in and email verification are
+  gone, and so is the "verified" gate on biodata, unlocks and proposals.
+- Deactivating an account always needs the password.
+
+### Removed
+
+- `/api/auth/*`, `POST /api/payments`, `/api/gateway/sslcommerz/*`, `POST /api/admin/users` and
+  `POST /api/admin/users/:id/reset-password` (account creation and password changes are done by
+  Better Auth's admin plugin on the website).
+- `checkout` in `GET /api/packages` and `checkoutEnabled` / `auth` in public settings.
+- The `better-auth`, `nodemailer` and direct `mongodb` dependencies, and the `BETTER_AUTH_URL`,
+  `COOKIE_SECURE`, `REQUIRE_VERIFICATION`, `OTP_DEV_ECHO`, `SMTP_*`, `MAIL_FROM`, `SMS_API_URL`,
+  `GOOGLE_*` and `SSLCOMMERZ_*` settings.
+
 ### Added
 
 - **Zero-setup development database.** When no MongoDB answers at the default local address,

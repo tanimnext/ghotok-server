@@ -1,210 +1,100 @@
+import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { app, client, codeFor, createUser, login, ORIGIN, PASSWORD, userWithAgent } from './helpers.js';
-import { models } from '../index.js';
+import { app, client, createUser, login, PASSWORD, startSession, userWithAgent } from './helpers.js';
+import { credentialsService, models, sessionAuth } from '../index.js';
 
 const { User } = models;
+const sessions = () => mongoose.connection.collection('session');
 
-const cookieOf = (res, name) => (res.headers['set-cookie'] ?? []).find((c) => c.includes(`${name}=`));
+// Sign-up and sign-in happen on the website (Better Auth in ghotok-client). This API only
+// reads the session cookie the website sets and the `session` row behind it.
 
-describe('sign-up and roles', () => {
-  it('makes every new account a member, whatever the request says', async () => {
-    const agent = client();
-    // Better Auth drops fields marked input:false, so these are ignored.
-    const ok = await agent.post('/api/auth/sign-up/email').send({
-      name: 'Rina Akter',
-      email: 'Rina@Example.com',
-      password: PASSWORD,
-      role: 'admin',
-      status: 'active',
-      connectionBalance: 99,
-    });
+describe('sessions from the website', () => {
+  it('accepts the signed Better Auth cookie and rejects tampered, unknown or expired ones', async () => {
+    const user = await createUser();
+    const { token, cookie } = await startSession(user);
+    const ok = await client().set('Cookie', cookie).get('/api/me');
     expect(ok.status).toBe(200);
-    expect(ok.body.user).toMatchObject({ email: 'rina@example.com', role: 'user' });
-    const stored = await User.findById(ok.body.user.id);
-    expect(stored).toMatchObject({
-      role: 'user',
-      status: 'active',
-      connectionBalance: 0,
-      emailVerified: false,
-    });
+    expect(ok.body.user).toMatchObject({ id: user._id.toString(), role: 'user' });
 
-    const me = await agent.get('/api/me');
-    expect(me.status).toBe(200);
-    expect(me.body.user).toMatchObject({ role: 'user', email: 'rina@example.com', isVerified: false });
+    // The secure-prefixed name (HTTPS sites) works too.
+    const secure = cookie.replace('ghotok.session_token', '__Secure-ghotok.session_token');
+    expect((await client().set('Cookie', secure).get('/api/me')).status).toBe(200);
 
-    // update-user cannot change the role either.
-    const sneaky = await agent.post('/api/auth/update-user').send({ role: 'admin', connectionBalance: 5 });
-    expect(sneaky.status).toBe(400);
-    await agent.post('/api/auth/update-user').send({ language: 'bn' }).expect(200);
-    expect((await agent.get('/api/me')).body.user).toMatchObject({
-      role: 'user',
-      connectionBalance: 0,
-      language: 'bn',
-    });
+    const forged = `ghotok.session_token=${encodeURIComponent(`${token}.${'A'.repeat(43)}=`)}`;
+    expect((await client().set('Cookie', forged).get('/api/me')).status).toBe(401);
+    expect((await client().set('Cookie', `ghotok.session_token=${token}`).get('/api/me')).status).toBe(401);
+    const unknown = `ghotok.session_token=${sessionAuth.signedCookieValue('not-a-session')}`;
+    expect((await client().set('Cookie', unknown).get('/api/me')).status).toBe(401);
 
-    // The same email cannot register twice.
-    const dup = await client()
-      .post('/api/auth/sign-up/email')
-      .send({ name: 'Copy', email: 'rina@example.com', password: PASSWORD });
-    expect(dup.status).toBe(422);
+    const old = await startSession(user, { expiresAt: new Date(Date.now() - 1000) });
+    expect((await client().set('Cookie', old.cookie).get('/api/me')).status).toBe(401);
   });
 
-  it('gives admin access only after the role is changed in the database', async () => {
+  it('checks cookies exactly like Better Auth signs them', () => {
+    // A cookie Better Auth 1.7.7 set with the development secret (from a real sign-in).
+    const cookie = 'T3Xcr5ccTaY21dmmfAKu8SLEZS9RbnW1.ZItPYA2W11WaH8HRbmT5bGKDy4ydUbCQnkfW3BhU6Tc%3D';
+    expect(sessionAuth.tokenFromCookie(cookie)).toBe('T3Xcr5ccTaY21dmmfAKu8SLEZS9RbnW1');
+    expect(sessionAuth.signedCookieValue('T3Xcr5ccTaY21dmmfAKu8SLEZS9RbnW1')).toBe(cookie);
+  });
+
+  it('hashes passwords in Better Auth’s format, so seeded accounts sign in on the website', async () => {
+    // A hash Better Auth 1.7.7 created for "ChangeMe!2026".
+    const hash =
+      '0843412041326154fd4c3899dc50015e:b3c28475984383b465f8e9528e97c9b0bc13b6caa80e94b8f5ee5270cbed24b25d671b8560f14722d8c5543e78bafdf8f5741f1dfb02bbf5f20a736f391b1730';
+    expect(await sessionAuth.verifyPassword(hash, 'ChangeMe!2026')).toBe(true);
+    expect(await sessionAuth.verifyPassword(hash, 'changeme!2026')).toBe(false);
+    const ours = await sessionAuth.hashPassword('Another pass 1');
+    expect(ours).toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/);
+    expect(await sessionAuth.verifyPassword(ours, 'Another pass 1')).toBe(true);
+
+    const user = await createUser();
+    const account = await mongoose.connection.collection('account').findOne({ userId: user._id });
+    expect(account).toMatchObject({ providerId: 'credential', accountId: user._id.toString() });
+    expect(await credentialsService.checkPassword(user._id, PASSWORD)).toBe(true);
+  });
+});
+
+describe('roles', () => {
+  it('treats new accounts as members and gives admin access only after a role change in the database', async () => {
     const { agent, user } = await userWithAgent();
-    expect((await request(app).get('/api/me')).status).toBe(401);
+    expect((await agent.get('/api/me')).body.user.role).toBe('user');
     expect((await agent.get('/api/admin/overview')).status).toBe(403);
+    expect((await request(app).get('/api/admin/overview')).status).toBe(401);
+
     await User.updateOne({ _id: user._id }, { role: 'admin' });
-    expect((await agent.get('/api/me')).body.user.role).toBe('admin');
     expect((await agent.get('/api/admin/overview')).status).toBe(200);
-    const session = await agent.get('/api/auth/get-session');
-    expect(session.body.user.role).toBe('admin');
   });
 
-  it('requires a verified email or phone before creating a biodata', async () => {
-    const { agent } = await userWithAgent({ verified: false });
-    const res = await agent.post('/api/biodatas/me').send({ pledge: true });
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('NOT_VERIFIED');
-  });
-});
-
-describe('one-time codes', () => {
-  it('verifies the email with the code sent at sign-up', async () => {
-    const agent = client();
-    await agent
-      .post('/api/auth/sign-up/email')
-      .send({ name: 'Mitu', email: 'mitu@example.com', password: PASSWORD })
-      .expect(200);
-    const code = codeFor('mitu@example.com');
-    expect(code).toMatch(/^\d{6}$/);
-    const wrong = await agent
-      .post('/api/auth/email-otp/verify-email')
-      .send({ email: 'mitu@example.com', otp: code === '000000' ? '111111' : '000000' });
-    expect(wrong.status).toBe(400);
-    const ok = await agent
-      .post('/api/auth/email-otp/verify-email')
-      .send({ email: 'mitu@example.com', otp: code });
-    expect(ok.status).toBe(200);
-    expect((await agent.get('/api/me')).body.user).toMatchObject({ emailVerified: true, isVerified: true });
-  });
-
-  it('signs in with an emailed code', async () => {
-    const user = await createUser();
-    const sent = await client()
-      .post('/api/auth/email-otp/send-verification-otp')
-      .send({ email: user.email, type: 'sign-in' });
-    expect(sent.status).toBe(200);
-    const agent = client();
-    const res = await agent
-      .post('/api/auth/sign-in/email-otp')
-      .send({ email: user.email, otp: codeFor(user.email) });
-    expect(res.status).toBe(200);
-    expect((await agent.get('/api/me')).body.user.id).toBe(user._id.toString());
-  });
-
-  it('signs in (and signs up) with an SMS code, as a member', async () => {
-    const phone = '01712345678';
-    const bad = await client()
-      .post('/api/auth/phone-number/send-otp')
-      .send({ phoneNumber: '+8801712345678' });
-    expect(bad.status).toBe(400);
-    await client().post('/api/auth/phone-number/send-otp').send({ phoneNumber: phone }).expect(200);
-    const agent = client();
-    const res = await agent
-      .post('/api/auth/phone-number/verify')
-      .send({ phoneNumber: phone, code: codeFor(phone) });
-    expect(res.status).toBe(200);
-    const me = (await agent.get('/api/me')).body.user;
-    expect(me).toMatchObject({ phoneNumber: phone, phoneNumberVerified: true, role: 'user', email: null });
-    // SMS-only members have no password, so deactivating needs none.
-    expect((await agent.delete('/api/me').send({})).status).toBe(200);
-  });
-
-  it('resets a forgotten password with an emailed code', async () => {
-    const user = await createUser();
-    const before = await login(user);
-    await client().post('/api/auth/email-otp/request-password-reset').send({ email: user.email }).expect(200);
-    const reset = await client()
-      .post('/api/auth/email-otp/reset-password')
-      .send({ email: user.email, otp: codeFor(user.email), password: 'BrandNew123' });
-    expect(reset.status).toBe(200);
-    expect((await before.get('/api/me')).status).toBe(401);
-    const old = await client()
-      .post('/api/auth/sign-in/email')
-      .send({ email: user.email, password: PASSWORD });
-    expect(old.status).toBe(401);
-    await login(user, 'BrandNew123');
+  it('refuses suspended and banned accounts even with a live session', async () => {
+    for (const status of ['suspended', 'banned']) {
+      const { agent, user } = await userWithAgent();
+      await User.updateOne({ _id: user._id }, { status });
+      const res = await agent.get('/api/me');
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('ACCOUNT_INACTIVE');
+    }
   });
 });
 
-describe('sessions', () => {
-  it('ends the session with the browser when "remember me" is off', async () => {
-    const user = await createUser();
-    const res = await client()
-      .post('/api/auth/sign-in/email')
-      .send({ email: user.email, password: PASSWORD, rememberMe: false });
-    expect(res.status).toBe(200);
-    expect(cookieOf(res, 'ghotok.session_token')).not.toMatch(/Max-Age/i);
-    const kept = await client()
-      .post('/api/auth/sign-in/email')
-      .send({ email: user.email, password: PASSWORD });
-    expect(cookieOf(kept, 'ghotok.session_token')).toMatch(/Max-Age/i);
-  });
-
-  it('lists devices, signs out the others and changes the password', async () => {
-    const user = await createUser();
-    const laptop = await login(user);
-    const phone = await login(user);
-    const list = await laptop.get('/api/auth/list-sessions');
-    expect(list.status).toBe(200);
-    // Signing up also opened a session, so there are three.
-    expect(list.body).toHaveLength(3);
-
-    // Sign one device out by its token.
-    const phoneToken = (await phone.get('/api/auth/get-session')).body.session.token;
-    await laptop.post('/api/auth/revoke-session').send({ token: phoneToken }).expect(200);
-    expect((await phone.get('/api/me')).status).toBe(401);
-    const tv = await login(user);
-
-    await laptop.post('/api/auth/revoke-other-sessions').send({}).expect(200);
-    expect((await tv.get('/api/me')).status).toBe(401);
-    expect((await phone.get('/api/me')).status).toBe(401);
-    expect((await laptop.get('/api/me')).status).toBe(200);
-
-    const tablet = await login(user);
-    const changed = await laptop
-      .post('/api/auth/change-password')
-      .send({ currentPassword: PASSWORD, newPassword: 'NewSecret123', revokeOtherSessions: true });
-    expect(changed.status).toBe(200);
-    expect((await tablet.get('/api/me')).status).toBe(401);
-    expect((await laptop.get('/api/me')).status).toBe(200);
-
-    await laptop.post('/api/auth/sign-out').send({}).expect(200);
-    expect((await laptop.get('/api/me')).status).toBe(401);
-  });
-
-  it('reactivates a deactivated account on the next sign-in', async () => {
+describe('deactivation', () => {
+  it('needs the password and signs the member out of every device', async () => {
     const { agent, user } = await userWithAgent();
+    await login(user); // a second device
     expect((await agent.delete('/api/me').send({ password: 'wrong-password' })).status).toBe(400);
     expect((await agent.delete('/api/me').send({ password: PASSWORD })).status).toBe(200);
     expect((await User.findById(user._id)).status).toBe('deactivated');
+    expect(await sessions().countDocuments({ userId: user._id })).toBe(0);
     expect((await agent.get('/api/me')).status).toBe(401);
-    const back = await login(user);
-    expect((await back.get('/api/me')).body.user.status).toBe('active');
   });
+});
 
-  it('refuses auth requests from untrusted origins', async () => {
-    const res = await request(app)
-      .post('/api/auth/sign-up/email')
-      .set('Origin', 'https://evil.example.com')
-      .send({ name: 'Eve', email: 'eve@example.com', password: PASSWORD });
-    expect(res.status).toBe(403);
-    expect(await User.exists({ email: 'eve@example.com' })).toBeNull();
-    const ours = await request(app)
-      .post('/api/auth/sign-up/email')
-      .set('Origin', ORIGIN)
-      .send({ name: 'Eve', email: 'eve@example.com', password: PASSWORD });
-    expect(ours.status).toBe(200);
+describe('moved to the website', () => {
+  it('no longer serves Better Auth, checkout or gateway routes', async () => {
+    const { agent } = await userWithAgent();
+    expect((await client().post('/api/auth/sign-in/email').send({})).status).toBe(404);
+    expect((await agent.post('/api/payments').send({})).status).toBe(404);
+    expect((await request(app).post('/api/gateway/sslcommerz/ipn').type('form').send({})).status).toBe(404);
   });
 });

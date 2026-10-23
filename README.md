@@ -6,28 +6,39 @@ publish a free biodata, browse approved biodatas and unlock a guardian's contact
 Nagad, Rocket or internet banking on one page). Admins review biodatas, see payments and handle
 refunds, reports and support.
 
-This repository is the backend only. The website, member dashboard and admin dashboard live in
-[ghotok-client](https://github.com/tanimnext/ghotok-client), which talks to this API.
+This repository is the backend only: one Express file, `index.js`. The website, member dashboard
+and admin dashboard live in [ghotok-client](https://github.com/tanimnext/ghotok-client), which also
+runs sign-up/sign-in (Better Auth, email + password) and the SSLCommerz checkout. Both apps use
+**the same MongoDB database**.
 
-|                |                                                                                                |
-| -------------- | ---------------------------------------------------------------------------------------------- |
-| Runtime        | Node.js 22, Express 5                                                                          |
-| Database       | MongoDB with Mongoose 8                                                                        |
-| Authentication | [Better Auth](https://www.better-auth.com) 1.7 (email + password, email and SMS codes, Google) |
-| Validation     | Zod 4                                                                                          |
-| Tests          | Vitest, Supertest, mongodb-memory-server                                                       |
+|                |                                                                                           |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| Runtime        | Node.js 22, Express 5                                                                     |
+| Database       | MongoDB with Mongoose 8                                                                   |
+| Authentication | Sessions from the website's [Better Auth](https://www.better-auth.com) (email + password) |
+| Validation     | Zod 4                                                                                     |
+| Tests          | Vitest, Supertest, mongodb-memory-server                                                  |
 
 ## How it fits together
 
 ```
 Browser ──► ghotok-client (Next.js) ──/api/* proxy──► ghotok-server (Express) ──► MongoDB
-   │                                                         ▲
-   └──── images ──► ImgBB (the API stores the links only) ───┘
+   │          ├─ /api/auth/*      Better Auth ─────────────────────────────────────►  ▲
+   │          └─ /api/checkout/*  SSLCommerz checkout ─────────────────────────────►  │
+   └──── images ──► ImgBB (the API stores the links only)                              │
+                                       (one database, shared by both apps) ────────────┘
 ```
 
-- The client proxies `/api/*` to this server, so the browser only talks to the website's origin
-  and the Better Auth session cookie is first-party.
-- `/api/auth/*` is Better Auth. Everything else is the Ghotok API (the Routes section of `index.js`).
+- **Sign-up and sign-in happen on the website.** Better Auth there writes the `user`,
+  `account` and `session` collections. It sets the cookie `ghotok.session_token`, signed with
+  `BETTER_AUTH_SECRET`.
+- **This API only reads sessions.** It checks the cookie's signature with the same
+  `BETTER_AUTH_SECRET` and looks the token up in `session` (`sessionAuth` in `index.js`).
+  Set the same `MONGODB_URI` and the same `BETTER_AUTH_SECRET` in both apps.
+- **Payments happen on the website** (SSLCommerz). It writes the `payments`, ledger and
+  notification documents this API shows in history, receipts, refunds and the admin dashboard.
+- The website proxies every other `/api/*` request to this server, so the browser only talks to
+  one origin and the cookie is first-party.
 - Images (support attachments, report evidence, wedding banners) are uploaded by the browser to
   ImgBB; the API accepts only `https://i.ibb.co/…` and `https://ibb.co/…` links. There are no
   profile photos and no NID uploads.
@@ -36,10 +47,12 @@ Browser ──► ghotok-client (Next.js) ──/api/* proxy──► ghotok-ser
 
 There are two roles: **user** (members) and **admin**.
 
-- Every new account is a `user`, however it was created (sign-up, SMS or email code, Google).
-  The `role` field cannot be set by sign-up or `update-user`.
+- Every account made by signing up is a `user`. The website refuses a `role` at sign-up and in
+  `update-user`.
 - An account becomes an admin only when its role is changed in the database, or by another admin
-  in the admin dashboard. The client sends admins to `/admin` and members to `/dashboard`.
+  in the admin dashboard (which also creates accounts and sets passwords, on the website). The
+  client sends admins to `/admin` and members to `/dashboard`.
+- Changing someone's role or suspending them here signs them out of every device.
 - `/api/admin/*` requires role `admin`; members get `403`.
 
 Make someone an admin from the MongoDB shell:
@@ -52,8 +65,9 @@ db.user.updateOne({ email: 'person@example.com' }, { $set: { role: 'admin' } });
 
 ## Run it on your computer
 
-You need **Node.js 22.12 or newer** (`node -v`) and a **MongoDB database**. The steps are the same
-on macOS and Windows; use Terminal (macOS) or PowerShell (Windows).
+You need **Node.js 22.12 or newer** (`node -v`) and a **MongoDB database**, and you run
+[ghotok-client](https://github.com/tanimnext/ghotok-client) next to it to sign in. The steps are
+the same on macOS and Windows; use Terminal (macOS) or PowerShell (Windows).
 
 **1. Install the packages and create your settings file**
 
@@ -84,50 +98,27 @@ For a database you keep (and always in production), choose one:
     with "Install as a Service" ticked.
   - Keep the default `MONGODB_URI=mongodb://127.0.0.1:27017/ghotok`.
 
-**3. Fill in the demo data and start the server**
+**3. Use the same database and secret as the website.** `MONGODB_URI` and `BETTER_AUTH_SECRET`
+must be identical in this `.env` and in ghotok-client's `.env.local`. With the defaults of both
+`.env.example` files they already are (local MongoDB, development secret).
+
+**4. Fill in the demo data and start the server, then start the website**
 
 ```bash
 npm run seed:demo             # admin, packages, pages, FAQs and demo members/biodatas
 npm run dev                   # http://localhost:4000/api/health should answer {"ok":true}
 ```
 
+Then start ghotok-client (`npm run dev` there) and open http://localhost:3000.
+
 `node index.js` and `nodemon` work too: `index.js` reads `.env` by itself (values already set in
 your shell win).
 
-Demo accounts after `npm run seed:demo`: the admin from `.env` (`admin@ghotok.com.bd` /
-`ChangeMe!2026` by default), `member@example.com` and `demo1…20@example.com` / `Demo@12345`.
+Demo accounts after `npm run seed:demo` sign in on the website: the admin from `.env`
+(`admin@ghotok.com.bd` / `ChangeMe!2026` by default), `member@example.com` and
+`demo1…20@example.com` / `Demo@12345`. The seed writes the passwords in Better Auth's own format.
 
-With `OTP_DEV_ECHO=true` (development only) every one-time code is written to the log, so you can
-sign in with codes without an SMS or email provider.
-
-### Payments (SSLCommerz sandbox)
-
-SSLCommerz is the only way to pay. Without its settings the site works, but buying connections
-answers "online payment is not available" (`503 PAYMENTS_UNAVAILABLE`).
-
-1. Register a free sandbox store at https://developer.sslcommerz.com/registration/; SSLCommerz
-   emails you a **Store ID** and **Store Password**.
-2. In `.env`:
-   ```
-   SSLCOMMERZ_ENABLED=true
-   SSLCOMMERZ_BASE_URL=https://sandbox.sslcommerz.com
-   SSLCOMMERZ_STORE_ID=your_store_id
-   SSLCOMMERZ_STORE_PASSWORD=your_store_password
-   ```
-3. SSLCommerz sends the result to `API_PUBLIC_URL/api/gateway/sslcommerz/return` (the member's
-   browser) and `API_PUBLIC_URL/api/gateway/sslcommerz/ipn` (its servers). Its servers cannot
-   reach `localhost`, so for a full local test open a tunnel, for example
-   `ngrok http 3000` (the website, which passes `/api` on to this server), and set
-   `API_PUBLIC_URL`, `BETTER_AUTH_URL` and `CLIENT_URL` to the `https://….ngrok-free.app`
-   address (add it to `CORS_ORIGINS` too). Without a tunnel the return still works in your own
-   browser, but the IPN does not arrive.
-4. Pay with the sandbox test cards or mobile wallets SSLCommerz lists in its developer docs. The
-   payment is credited only after SSLCommerz's validation API confirms it and the amount matches.
-
-For production use `SSLCOMMERZ_BASE_URL=https://securepay.sslcommerz.com` with your live store,
-and set the IPN URL in the SSLCommerz merchant panel as well. Refunds of money are made in the
-SSLCommerz panel; record them in the admin dashboard (_Refunds → money back_) so the unused
-connections are taken back.
+Payments (SSLCommerz) are set up in ghotok-client; see its README.
 
 ## Scripts
 
@@ -147,17 +138,14 @@ connections are taken back.
 Every variable is documented in [`.env.example`](.env.example) and validated at start-up in
 the Configuration section of [`index.js`](index.js) (`envConfig`). The important ones:
 
-| Variable                                   | Meaning                                                                                       |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `MONGODB_URI`                              | MongoDB connection string                                                                     |
-| `CLIENT_URL`                               | The website's URL (redirects after payments, links in emails)                                 |
-| `CORS_ORIGINS`                             | Origins allowed to call the API with cookies (the website)                                    |
-| `BETTER_AUTH_URL`                          | The public URL the browser uses for `/api/auth`: the website's URL, because it proxies `/api` |
-| `BETTER_AUTH_SECRET`                       | 32+ random characters; the API refuses to start in production with the default                |
-| `API_PUBLIC_URL`                           | Where SSLCommerz sends results (`/api/gateway/sslcommerz/return` and `/ipn`)                  |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional Google sign-in; redirect URI `<BETTER_AUTH_URL>/api/auth/callback/google`            |
-| `SMTP_*`, `SMS_API_URL`                    | Email and SMS delivery for one-time codes and notices (logged when empty)                     |
-| `SSLCOMMERZ_*`                             | The SSLCommerz store; payments are unavailable until it is set (see _Payments_ above)         |
+| Variable             | Meaning                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| `MONGODB_URI`        | MongoDB connection string; **the same database as ghotok-client**                      |
+| `BETTER_AUTH_SECRET` | **The same value as ghotok-client**; checks the session cookie. Required in production |
+| `CLIENT_URL`         | The website's URL                                                                      |
+| `CORS_ORIGINS`       | Origins allowed to call the API with cookies (the website)                             |
+| `API_PUBLIC_URL`     | This API's own public URL (allowed by the origin check)                                |
+| `SEED_ADMIN_*`       | The first admin `npm run seed` creates                                                 |
 
 ## Project layout
 
@@ -174,17 +162,16 @@ docs/adr/                Decision records
 2. Shared rules: option lists, locations, the biodata definition, permissions (`shared`)
 3. Utilities (errors, pagination, request helpers)
 4. Database models (Mongoose), collected in `models` (`models.Biodata`, `models.User`, …)
-5. Integrations: email, SMS and the payment gateways (`paymentGateways`)
-6. Authentication: Better Auth (`authConfig`)
-7. Services: the business rules (`biodataService`, `paymentService`, …)
-8. Request validation schemas (Zod) (`biodataValidation`, `adminValidation`, …)
-9. Serializers: what each audience may see (`biodataSerializer`, …)
-10. Middleware: auth, security, validation, errors
-11. Controllers
-12. Routes (`apiRoutes`, `adminRoutes`, …)
-13. The Express application (`appModule.createApp`)
-14. Seed data and the seed script (`seedScript`)
-15. Start: `node index.js` runs the server, `node index.js seed [--demo]` seeds the database
+5. Authentication: reading the website's Better Auth sessions (`sessionAuth`)
+6. Services: the business rules (`biodataService`, `paymentService`, …)
+7. Request validation schemas (Zod) (`biodataValidation`, `adminValidation`, …)
+8. Serializers: what each audience may see (`biodataSerializer`, …)
+9. Middleware: auth, security, validation, errors
+10. Controllers
+11. Routes (`apiRoutes`, `adminRoutes`, …)
+12. The Express application (`appModule.createApp`)
+13. Seed data and the seed script (`seedScript`)
+14. Start: `node index.js` runs the server, `node index.js seed [--demo]` seeds the database
 
 Each part is a namespace object: `const biodataService = (() => { …; return { … }; })();`.
 Parts reach each other through these names, so to find something:
@@ -209,8 +196,8 @@ docker run --env-file .env -p 4000:4000 ghotok-server
 ```
 
 Put the API behind the website's `/api` proxy (or a reverse proxy on the same site) so the
-session cookie stays first-party, set `COOKIE_SECURE=true`, a strong `BETTER_AUTH_SECRET`,
-`OTP_DEV_ECHO=false` and real SMTP/SMS settings, then run `npm run seed` once. The API reads
+session cookie stays first-party, give it the website's `MONGODB_URI` and `BETTER_AUTH_SECRET`,
+then run `npm run seed` once. The API reads
 `TRUST_PROXY` to see visitors' real IP addresses behind proxies.
 
 ## Documentation

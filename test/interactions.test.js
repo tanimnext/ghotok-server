@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { app, approvedBiodata, client, login, PASSWORD, userWithAgent } from './helpers.js';
+import { app, approvedBiodata, login, userWithAgent } from './helpers.js';
 
 describe('favorites, dislikes, proposals, reports and support', () => {
   it('manages favorites and dislikes, and hides disliked biodatas from search', async () => {
@@ -141,7 +141,7 @@ describe('favorites, dislikes, proposals, reports and support', () => {
     expect(msgs.body.items[0]).not.toHaveProperty('ip');
   });
 
-  it('lets an admin suspend users (blocking their biodata), create accounts and promote members', async () => {
+  it('lets an admin suspend users (blocking their biodata) and promote members', async () => {
     const target = await approvedBiodata({ index: 4 });
     const targetAgent = await login(target.user);
     const { agent: admin, user: me } = await userWithAgent({ role: 'admin' });
@@ -150,36 +150,20 @@ describe('favorites, dislikes, proposals, reports and support', () => {
       .send({ status: 'suspended', statusReason: 'Fraud report' });
     expect(sus.status).toBe(200);
     expect((await request(app).get(`/api/biodatas/${target.biodata.biodataNo}`)).status).toBe(404);
-    // Suspension ends their sessions and blocks new sign-ins.
+    // Suspension ends their sessions; a session the website creates later is refused too.
     expect((await targetAgent.get('/api/me')).status).toBe(401);
-    const again = await client()
-      .post('/api/auth/sign-in/email')
-      .send({ email: target.user.email, password: PASSWORD });
+    const again = await (await login(target.user)).get('/api/me');
     expect(again.status).toBe(403);
-    expect(again.body.code).toBe('ACCOUNT_INACTIVE');
+    expect(again.body.error.code).toBe('ACCOUNT_INACTIVE');
     expect((await admin.patch(`/api/admin/users/${me._id}`).send({ role: 'user' })).status).toBe(403);
 
-    // An account created by an admin signs in through Better Auth like any other.
-    const created = await admin.post('/api/admin/users').send({
-      name: 'New Admin',
-      email: 'second-admin@example.com',
-      password: 'Reviewer123',
-      role: 'admin',
-    });
-    expect(created.status).toBe(201);
-    expect(created.body.user.role).toBe('admin');
-    const second = client();
-    await second
-      .post('/api/auth/sign-in/email')
-      .send({ email: 'second-admin@example.com', password: 'Reviewer123' })
-      .expect(200);
-    expect((await second.get('/api/admin/users')).status).toBe(200);
+    // Creating accounts and setting passwords happen on the website (Better Auth admin plugin).
+    expect((await admin.post('/api/admin/users').send({ name: 'X' })).status).toBe(404);
 
-    // Promoting a member: their next request already has admin rights.
+    // Promoting a member: a role change signs them out everywhere, the next session is an admin.
     const { agent: member, user: m } = await userWithAgent();
     expect((await member.get('/api/admin/overview')).status).toBe(403);
     expect((await admin.patch(`/api/admin/users/${m._id}`).send({ role: 'admin' })).status).toBe(200);
-    // A role change signs the user out everywhere, so they sign in again.
     expect((await member.get('/api/me')).status).toBe(401);
     const promoted = await login(m);
     expect((await promoted.get('/api/me')).body.user.role).toBe('admin');

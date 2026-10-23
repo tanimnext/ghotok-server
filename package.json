@@ -22,15 +22,12 @@
     "db:stop": "node index.js db:stop"
   },
   "dependencies": {
-    "better-auth": "1.7.7",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^5.1.0",
     "express-rate-limit": "^8.7.1",
     "helmet": "^8.3.0",
-    "mongodb": "~6.20.0",
     "mongoose": "^8.24.5",
-    "nodemailer": "^10.0.16",
     "pino": "^10.4.0",
     "pino-http": "^11.0.0",
     "zod": "^4.1.0"

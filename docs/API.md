@@ -3,24 +3,24 @@
 Base URL: `/api` (in development `http://localhost:4000/api`; the client proxies `/api` to the
 API so the browser calls it on the website's own origin). Request and response bodies are JSON.
 Every route is defined in the Routes section of `index.js` and every request body, query and URL
-parameter is validated by the Zod schemas in its Request validation section. Authentication endpoints under `/api/auth`
-belong to [Better Auth](https://www.better-auth.com) (configured in the Authentication section of `index.js`, `authConfig`). Those
-files are the source of truth when this page and the code disagree.
+parameter is validated by the Zod schemas in its Request validation section. That file is the
+source of truth when this page and the code disagree.
+
+Signing up, signing in and paying are **not** in this API: the website (ghotok-client) runs
+[Better Auth](https://www.better-auth.com) at `/api/auth/*` and the SSLCommerz checkout at
+`/api/checkout/*`, writing to the same MongoDB database (see its README).
 
 ## Conventions
 
-**Authentication.** Better Auth signs people in and sets an `HttpOnly` session cookie
-(`ghotok.session_token`). Browsers send it automatically; the client must send requests with
-`credentials: 'include'` (or call the API through its `/api` proxy). There are two roles: `user`
-(every new account) and `admin`. Nobody can choose a role when signing up; an account becomes an
-admin when its `role` is set to `admin` in the database (or by another admin).
-
-| Marker   | Meaning                                                                                 |
-| -------- | --------------------------------------------------------------------------------------- |
-| public   | No account needed                                                                       |
-| auth     | Signed in (`401 UNAUTHORIZED`; suspended or banned accounts get `403 ACCOUNT_INACTIVE`) |
-| verified | Signed in with a verified email or phone (`403 NOT_VERIFIED`)                           |
-| admin    | Role `admin` (`403 FORBIDDEN` for members)                                              |
+**Authentication.** Members sign up and sign in on the website with email + password (Better
+Auth). It sets an `HttpOnly` session cookie, `ghotok.session_token` (`__Secure-ghotok.session_token`
+on HTTPS), whose value is the session token signed with `BETTER_AUTH_SECRET`. This API checks the
+signature with the same secret (it must match the website's), looks the token up in the `session`
+collection of the shared database and loads the account (`sessionAuth` in `index.js`). Browsers
+send the cookie automatically because the website proxies `/api` to this server. There are two
+roles: `user` (every new account) and `admin`. Nobody can choose a role when signing up; an account
+becomes an admin when its `role` is set to `admin` in the database, or when an admin creates it as
+one on the website.
 
 **Errors.**
 
@@ -34,8 +34,7 @@ admin when its `role` is set to `admin` in the database (or by another admin).
 }
 ```
 
-Better Auth endpoints answer errors as `{ code, message }` instead. Switch on `code`, never on
-`message`. Common codes: `VALIDATION_ERROR`, `UNAUTHORIZED`, `NOT_VERIFIED`, `ACCOUNT_INACTIVE`, `FORBIDDEN`, `NOT_FOUND`,
+Switch on `code`, never on `message`. Common codes: `VALIDATION_ERROR`, `UNAUTHORIZED`, `ACCOUNT_INACTIVE`, `FORBIDDEN`, `NOT_FOUND`,
 `NOT_PENDING` (someone already processed it), `INSUFFICIENT_CONNECTIONS` (402), `RATE_LIMITED`
 (429), `BAD_ORIGIN`, `SERVER_ERROR`. Biodata lifecycle codes: `PLEDGE_REQUIRED`, `EDIT_SUSPENDED`
 (`details.until`), `CORRECTIONS_PENDING`, `RESTORE_NEEDS_APPROVAL`, `RESTORE_BLOCKED`,
@@ -43,16 +42,16 @@ Better Auth endpoints answer errors as `{ code, message }` instead. Switch on `c
 
 **Lists** return `{ items, total, page, limit, pages }` and accept `?page=` and `?limit=`.
 
-**Origins.** `POST`/`PUT`/`PATCH`/`DELETE` requests carrying an `Origin` header (including those
-to `/api/auth`) must come from the API's own origin or one listed in `CORS_ORIGINS`.
+**Origins.** `POST`/`PUT`/`PATCH`/`DELETE` requests carrying an `Origin` header must come from the
+API's own origin or one listed in `CORS_ORIGINS`.
 
 **Images.** The browser uploads images to [ImgBB](https://api.imgbb.com/) and sends the API the
 resulting links. Fields that take images (`attachments`, banner `imageUrl` / `downloadUrl`) accept
 only `https://i.ibb.co/…` or `https://ibb.co/…` URLs (`400 VALIDATION_ERROR` otherwise). There are
 no profile photos and no NID uploads.
 
-**Rate limits.** Better Auth limits its own endpoints in production; write-heavy member actions
-(unlock, favourite, proposals, payments, tickets) have tighter limits than the general API limit.
+**Rate limits.** Write-heavy member actions (unlock, favourite, proposals, refunds, tickets) have
+tighter limits than the general API limit.
 
 ## Health
 
@@ -60,49 +59,24 @@ no profile photos and no NID uploads.
 | ------ | --------- | ------ | -------------- |
 | GET    | `/health` | public | `{ ok, time }` |
 
-## Auth: `/auth` (Better Auth)
+## Sign-up and sign-in (on the website)
 
-The client uses Better Auth's client library (`better-auth/react` with the `emailOTPClient` and
-`phoneNumberClient` plugins), which calls these endpoints. Mobile numbers are sent as
-`01XXXXXXXXX`. Successful sign-ins set the session cookie and return `{ token, user }` (sign-up,
-sign-in) or `{ status, token, user }` (phone verify). `user` includes `role`, `status`,
-`language`, `connectionBalance`, `emailVerified`, `phoneNumber` and `phoneNumberVerified`.
-
-| Method | Path                                        | Body / notes                                                                                                                                                                                             |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/auth/sign-up/email`                       | `{ name, email, password, phoneNumber?, language? }`. Role is always `user`; `role`, `status` and `connectionBalance` in the body are ignored. Emails a verification code. `422` when the email is taken |
-| POST   | `/auth/sign-in/email`                       | `{ email, password, rememberMe? }`. `rememberMe: false` makes the cookie end with the browser session. `401` wrong credentials, `403 ACCOUNT_INACTIVE` suspended/banned                                  |
-| POST   | `/auth/email-otp/send-verification-otp`     | `{ email, type: 'email-verification' \| 'sign-in' \| 'forget-password' }`, sends a 6-digit code (10 minutes, 5 attempts)                                                                                 |
-| POST   | `/auth/email-otp/verify-email`              | `{ email, otp }`, marks the email verified                                                                                                                                                               |
-| POST   | `/auth/sign-in/email-otp`                   | `{ email, otp }`, signs in (creates a member account for a new email)                                                                                                                                    |
-| POST   | `/auth/email-otp/request-password-reset`    | `{ email }`, emails a reset code                                                                                                                                                                         |
-| POST   | `/auth/email-otp/reset-password`            | `{ email, otp, password }`, sets the password and signs out every session                                                                                                                                |
-| POST   | `/auth/phone-number/send-otp`               | `{ phoneNumber }`, texts a 6-digit code                                                                                                                                                                  |
-| POST   | `/auth/phone-number/verify`                 | `{ phoneNumber, code }`, signs in; the first time it creates a member account (no password, no email)                                                                                                    |
-| POST   | `/auth/sign-in/phone-number`                | `{ phoneNumber, password, rememberMe? }`                                                                                                                                                                 |
-| POST   | `/auth/phone-number/request-password-reset` | `{ phoneNumber }`                                                                                                                                                                                        |
-| POST   | `/auth/phone-number/reset-password`         | `{ phoneNumber, otp, newPassword }`                                                                                                                                                                      |
-| POST   | `/auth/sign-in/social`                      | `{ provider: 'google', callbackURL, errorCallbackURL? }` → `{ url, redirect: true }`; the browser goes to `url`. Only when `GOOGLE_CLIENT_ID/SECRET` are set (see `/public/settings` → `auth.google`)    |
-| GET    | `/auth/callback/google`                     | Google's redirect URI                                                                                                                                                                                    |
-| GET    | `/auth/get-session`                         | `{ session, user }` or `null`                                                                                                                                                                            |
-| GET    | `/auth/list-sessions`                       | The account's signed-in devices: `[{ id, token, userAgent, ipAddress, createdAt, expiresAt }]`                                                                                                           |
-| POST   | `/auth/revoke-session`                      | `{ token }`, signs one device out                                                                                                                                                                        |
-| POST   | `/auth/revoke-other-sessions`               | Signs out every other device                                                                                                                                                                             |
-| POST   | `/auth/revoke-sessions`                     | Signs out every device, this one included                                                                                                                                                                |
-| POST   | `/auth/change-password`                     | `{ currentPassword, newPassword, revokeOtherSessions? }`                                                                                                                                                 |
-| POST   | `/auth/update-user`                         | `{ name?, language? }`; `role`, `status` or `connectionBalance` in the body is refused (`400`)                                                                                                           |
-| POST   | `/auth/sign-out`                            | Ends this session                                                                                                                                                                                        |
-
-With `OTP_DEV_ECHO=true` (development only) every code is written to the API log.
+Not served by this API. The website's Better Auth handles `/api/auth/sign-up/email`,
+`/api/auth/sign-in/email` (with `rememberMe`), `/api/auth/get-session`, `/api/auth/list-sessions`,
+`/api/auth/revoke-session`, `/api/auth/revoke-other-sessions`, `/api/auth/revoke-sessions`,
+`/api/auth/change-password`, `/api/auth/update-user`, `/api/auth/sign-out` and, for admins, the
+admin plugin's `/api/auth/admin/create-user`, `/api/auth/admin/set-user-password` and
+`/api/auth/admin/revoke-user-sessions`. Only email + password: there are no one-time codes, no
+SMS, no Google and no password reset by email (an admin sets a new password).
 
 ## Account: `/me` (auth)
 
 | Method | Path                                                               | Body / notes                                                                                                                                                                                                                                |
 | ------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/me`                                                              | `{ user }`: `id, name, email, phoneNumber, role, status, emailVerified, phoneNumberVerified, isVerified, connectionBalance, connectionsPurchased, connectionsUsed, language, lastLoginAt, createdAt`. `email` is null for SMS-only accounts |
+| GET    | `/me`                                                              | `{ user }`: `id, name, email, phoneNumber, role, status, emailVerified, phoneNumberVerified, isVerified, connectionBalance, connectionsPurchased, connectionsUsed, language, lastLoginAt, createdAt` (the verified flags are set by admins) |
 | GET    | `/me/dashboard`                                                    | Biodata summary, connection balance, visit stats, counts, recent proposals                                                                                                                                                                  |
 | PATCH  | `/me`                                                              | `{ name?, language? }`                                                                                                                                                                                                                      |
-| DELETE | `/me`                                                              | `{ password?, reason? }`, deactivates the account and signs out everywhere (`password` is required when the account has one). Signing in again reactivates it                                                                               |
+| DELETE | `/me`                                                              | `{ password, reason? }`, deactivates the account and signs out everywhere (`400 WRONG_PASSWORD` for a wrong password). Signing in again on the website reactivates it                                                                       |
 | GET    | `/me/favorites`, `/me/dislikes`, `/me/favorited-me`, `/me/unlocks` | Personal lists                                                                                                                                                                                                                              |
 | GET    | `/me/connections`                                                  | Balance and ledger                                                                                                                                                                                                                          |
 | GET    | `/me/proposals`                                                    | `?box=sent\|received&status=`                                                                                                                                                                                                               |
@@ -116,46 +90,44 @@ With `OTP_DEV_ECHO=true` (development only) every code is written to the API log
 
 The member's own biodata:
 
-| Method     | Path                             | Access   | Body / notes                                                                                                                                                                                |
-| ---------- | -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET        | `/biodatas/me`                   | auth     | `{ biodata, completion }`, `biodata` is null before creation                                                                                                                                |
-| POST       | `/biodatas/me`                   | verified | `{ pledge: true }`, accepts the pledge and creates an empty draft                                                                                                                           |
-| PUT        | `/biodatas/me/sections/:section` | verified | `{ data }`, one section, validated with the shared definition. Editing an approved biodata sends it back to review. `EDIT_SUSPENDED` while staff have suspended editing                     |
-| POST       | `/biodatas/me/submit`            | verified | Submits a complete biodata for review (`CORRECTIONS_PENDING` until every requested correction is changed)                                                                                   |
-| PATCH      | `/biodatas/me/visibility`        | auth     | `{ hidden, reason?, note? }`, hiding needs a reason from `HIDE_REASONS` (and a note for `other`)                                                                                            |
-| DELETE     | `/biodatas/me`                   | auth     | `{ reason, note?, marriage? }`, soft delete. With a marriage reason, `marriage` is `{ marriedOn?, place?, partnerBiodataNo?, partner?, story?, shareStory? }` and becomes a marriage report |
-| POST       | `/biodatas/me/restore`           | auth     | Restores a deleted biodata that was never approved; otherwise `RESTORE_NEEDS_APPROVAL`                                                                                                      |
-| GET / POST | `/biodatas/me/restore-request`   | auth     | `{ reason? }`, asks staff to restore a deleted biodata (`RESTORE_BLOCKED` after a permanent decline)                                                                                        |
-| GET        | `/biodatas/partner-lookup`       | auth     | `?no=GH-1024`, the partner's public summary for the marriage form                                                                                                                           |
-| GET        | `/biodatas/me/stats`             | auth     | Visits today / 7 days / 30 days, favourites                                                                                                                                                 |
+| Method     | Path                             | Access | Body / notes                                                                                                                                                                                |
+| ---------- | -------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET        | `/biodatas/me`                   | auth   | `{ biodata, completion }`, `biodata` is null before creation                                                                                                                                |
+| POST       | `/biodatas/me`                   | auth   | `{ pledge: true }`, accepts the pledge and creates an empty draft                                                                                                                           |
+| PUT        | `/biodatas/me/sections/:section` | auth   | `{ data }`, one section, validated with the shared definition. Editing an approved biodata sends it back to review. `EDIT_SUSPENDED` while staff have suspended editing                     |
+| POST       | `/biodatas/me/submit`            | auth   | Submits a complete biodata for review (`CORRECTIONS_PENDING` until every requested correction is changed)                                                                                   |
+| PATCH      | `/biodatas/me/visibility`        | auth   | `{ hidden, reason?, note? }`, hiding needs a reason from `HIDE_REASONS` (and a note for `other`)                                                                                            |
+| DELETE     | `/biodatas/me`                   | auth   | `{ reason, note?, marriage? }`, soft delete. With a marriage reason, `marriage` is `{ marriedOn?, place?, partnerBiodataNo?, partner?, story?, shareStory? }` and becomes a marriage report |
+| POST       | `/biodatas/me/restore`           | auth   | Restores a deleted biodata that was never approved; otherwise `RESTORE_NEEDS_APPROVAL`                                                                                                      |
+| GET / POST | `/biodatas/me/restore-request`   | auth   | `{ reason? }`, asks staff to restore a deleted biodata (`RESTORE_BLOCKED` after a permanent decline)                                                                                        |
+| GET        | `/biodatas/partner-lookup`       | auth   | `?no=GH-1024`, the partner's public summary for the marriage form                                                                                                                           |
+| GET        | `/biodatas/me/stats`             | auth   | Visits today / 7 days / 30 days, favourites                                                                                                                                                 |
 
 Browsing and interacting (`:no` is a biodata number such as `GH-1005`):
 
-| Method        | Path                        | Access   | Body / notes                                                                                                                                                                                                                                                                                                                                |
-| ------------- | --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET           | `/biodatas`                 | public   | Search. `?type&religion&marital&complexion&profession&economic&division&district&upazila&presentDistrict&presentUpazila&ageMin&ageMax&heightMin&heightMax&education&medium&category&q&sort&page&limit` (list filters take comma-separated values; `sort` is `newest`, `oldest`, …). Signed-in viewers also get `seen` and `favorited` flags |
-| GET           | `/biodatas/location-counts` | public   | Same filters plus `scope=permanent\|present`: `{ divisions, districts, upazilas }` counts that ignore the location being picked                                                                                                                                                                                                             |
-| GET           | `/biodatas/featured`        | public   | `?limit=` (1–12)                                                                                                                                                                                                                                                                                                                            |
-| GET           | `/biodatas/:no`             | public   | Public profile (no private fields)                                                                                                                                                                                                                                                                                                          |
-| POST          | `/biodatas/:no/visit`       | public   | Counts a profile visit (once per visitor per day)                                                                                                                                                                                                                                                                                           |
-| GET           | `/biodatas/:no/viewer`      | auth     | The viewer's state: unlocked (with contact), favourite, dislike, proposal, `refunded`, `report: { status, ticketId }`                                                                                                                                                                                                                       |
-| POST          | `/biodatas/:no/unlock`      | verified | Spends one connection (402 `INSUFFICIENT_CONNECTIONS`); unlocking again is free. Returns the guardian contact                                                                                                                                                                                                                               |
-| POST / DELETE | `/biodatas/:no/favorite`    | auth     |                                                                                                                                                                                                                                                                                                                                             |
-| POST / DELETE | `/biodatas/:no/dislike`     | auth     |                                                                                                                                                                                                                                                                                                                                             |
-| POST          | `/biodatas/:no/proposals`   | verified | `{ message? }`                                                                                                                                                                                                                                                                                                                              |
-| POST          | `/biodatas/:no/report`      | auth     | `{ reason, details?, attachments? }` (up to 5 ImgBB image links), opens a linked support ticket                                                                                                                                                                                                                                             |
+| Method        | Path                        | Access | Body / notes                                                                                                                                                                                                                                                                                                                                |
+| ------------- | --------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET           | `/biodatas`                 | public | Search. `?type&religion&marital&complexion&profession&economic&division&district&upazila&presentDistrict&presentUpazila&ageMin&ageMax&heightMin&heightMax&education&medium&category&q&sort&page&limit` (list filters take comma-separated values; `sort` is `newest`, `oldest`, …). Signed-in viewers also get `seen` and `favorited` flags |
+| GET           | `/biodatas/location-counts` | public | Same filters plus `scope=permanent\|present`: `{ divisions, districts, upazilas }` counts that ignore the location being picked                                                                                                                                                                                                             |
+| GET           | `/biodatas/featured`        | public | `?limit=` (1–12)                                                                                                                                                                                                                                                                                                                            |
+| GET           | `/biodatas/:no`             | public | Public profile (no private fields)                                                                                                                                                                                                                                                                                                          |
+| POST          | `/biodatas/:no/visit`       | public | Counts a profile visit (once per visitor per day)                                                                                                                                                                                                                                                                                           |
+| GET           | `/biodatas/:no/viewer`      | auth   | The viewer's state: unlocked (with contact), favourite, dislike, proposal, `refunded`, `report: { status, ticketId }`                                                                                                                                                                                                                       |
+| POST          | `/biodatas/:no/unlock`      | auth   | Spends one connection (402 `INSUFFICIENT_CONNECTIONS`); unlocking again is free. Returns the guardian contact                                                                                                                                                                                                                               |
+| POST / DELETE | `/biodatas/:no/favorite`    | auth   |                                                                                                                                                                                                                                                                                                                                             |
+| POST / DELETE | `/biodatas/:no/dislike`     | auth   |                                                                                                                                                                                                                                                                                                                                             |
+| POST          | `/biodatas/:no/proposals`   | auth   | `{ message? }`                                                                                                                                                                                                                                                                                                                              |
+| POST          | `/biodatas/:no/report`      | auth   | `{ reason, details?, attachments? }` (up to 5 ImgBB image links), opens a linked support ticket                                                                                                                                                                                                                                             |
 
 ## Packages, payments and refunds
 
-| Method | Path                                                    | Access     | Body / notes                                                                                                                                                                                                                                                                                                                                              |
-| ------ | ------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/packages`                                             | public     | Active packages (with `discountPercent` and `finalPrice` for the viewer) and `checkout: { enabled }` (false until SSLCommerz is configured)                                                                                                                                                                                                               |
-| POST   | `/payments`                                             | verified   | `{ packageId }`. Starts an SSLCommerz checkout and returns `{ payment, redirectURL }` (send the browser to `redirectURL`). `503 PAYMENTS_UNAVAILABLE` when SSLCommerz is not configured, `502 GATEWAY_ERROR` when it does not answer                                                                                                                      |
-| GET    | `/payments/mine`                                        | auth       |                                                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/payments/status/:invoiceNo`                           | auth       | One of the member's own payments, for the receipt page                                                                                                                                                                                                                                                                                                    |
-| POST   | `/gateway/sslcommerz/return`, `/gateway/sslcommerz/ipn` | SSLCommerz | Form posts from SSLCommerz (mounted outside the origin check). Every result is re-validated with SSLCommerz's validation API and the amount must match before connections are credited; repeated posts credit once. `return` redirects to `/dashboard/payment/<invoice>?result=success\|failed\|cancelled` on the website, `ipn` answers `{ ok, status }` |
-| POST   | `/refunds`                                              | auth       | `{ paymentId, reason }`                                                                                                                                                                                                                                                                                                                                   |
-| GET    | `/refunds/mine`                                         | auth       |                                                                                                                                                                                                                                                                                                                                                           |
+| Method | Path                          | Access | Body / notes                                                                                                                                                                                   |
+| ------ | ----------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/packages`                   | public | Active packages (with `discountPercent` and `finalPrice` for the viewer). Buying happens on the website (`POST /api/checkout` there), which records payments in the same `payments` collection |
+| GET    | `/payments/mine`              | auth   |                                                                                                                                                                                                |
+| GET    | `/payments/status/:invoiceNo` | auth   | One of the member's own payments, for the receipt page                                                                                                                                         |
+| POST   | `/refunds`                    | auth   | `{ paymentId, reason }`                                                                                                                                                                        |
+| GET    | `/refunds/mine`               | auth   |                                                                                                                                                                                                |
 
 ## Support and content
 
@@ -206,13 +178,11 @@ the permissions in `index.js` (`sharedPermissions`); all of them belong to admin
 
 **Users**
 
-| Method | Path                              | Permission     | Body / notes                                                                                                                                                                                                                     |
-| ------ | --------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/admin/users`                    | `users.view`   | `?q&role=user\|admin&status&verified`                                                                                                                                                                                            |
-| GET    | `/admin/users/:id`                | `users.view`   | Account, biodata, payments, ledger, counts                                                                                                                                                                                       |
-| PATCH  | `/admin/users/:id`                | `users.manage` | `{ name?, email?, phoneNumber?, role?, status?, statusReason?, emailVerified?, phoneNumberVerified? }`. Admins cannot change their own role or suspend themselves. Changing the role or suspending signs the user out everywhere |
-| POST   | `/admin/users`                    | `users.manage` | `{ name, email, phoneNumber?, password, role? }`, an email + password account (default role `user`), treated as verified                                                                                                         |
-| POST   | `/admin/users/:id/reset-password` | `users.manage` | `{ password }`, signs the user out everywhere                                                                                                                                                                                    |
+| Method | Path               | Permission     | Body / notes                                                                                                                                                                                                                     |
+| ------ | ------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/admin/users`     | `users.view`   | `?q&role=user\|admin&status&verified`                                                                                                                                                                                            |
+| GET    | `/admin/users/:id` | `users.view`   | Account, biodata, payments, ledger, counts                                                                                                                                                                                       |
+| PATCH  | `/admin/users/:id` | `users.manage` | `{ name?, email?, phoneNumber?, role?, status?, statusReason?, emailVerified?, phoneNumberVerified? }`. Admins cannot change their own role or suspend themselves. Changing the role or suspending signs the user out everywhere |
 
 **Money**
 

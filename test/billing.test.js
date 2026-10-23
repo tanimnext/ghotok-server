@@ -13,19 +13,27 @@ beforeAll(async () => {
   standard = await Package.create({ name: { en: 'Standard' }, connections: 5, price: 500, sortOrder: 2 });
 });
 
-/** A package bought and paid through SSLCommerz (the gateway result is applied directly). */
+/** A package bought through SSLCommerz, as ghotok-client's checkout records and credits it. */
 async function paidPayment(user, pkg = standard) {
+  const invoiceNo = `INV-TEST-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   const payment = await Payment.create({
-    invoiceNo: `INV-TEST-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
+    invoiceNo,
     user: user._id,
     package: pkg._id,
     packageName: pkg.name,
     connections: pkg.connections,
     amount: pkg.price,
     method: 'sslcommerz',
-    status: 'initiated',
+    status: 'verified',
+    trxId: `BT${invoiceNo}`,
+    creditedAt: new Date(),
   });
-  return connectionService.creditPayment(payment._id, { trxId: `BT${payment.invoiceNo}` });
+  await connectionService.changeBalance(user._id, pkg.connections, {
+    type: 'purchase',
+    payment: payment._id,
+    reason: invoiceNo,
+  });
+  return payment;
 }
 
 describe('connections and payments', () => {
@@ -37,7 +45,7 @@ describe('connections and payments', () => {
       [3, 300],
       [5, 500],
     ]);
-    expect(res.body.checkout).toEqual({ enabled: false });
+    expect(res.body).not.toHaveProperty('checkout');
   });
 
   it('refuses to unlock a contact without a balance', async () => {
@@ -194,7 +202,6 @@ describe('connections and payments', () => {
     expect(settings.body.payments).toEqual({
       approvalGift: 2,
       approvedDiscountPercent: 10,
-      checkoutEnabled: false,
     });
   });
 });

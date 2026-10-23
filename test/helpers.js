@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
+import mongoose from 'mongoose';
 import request from 'supertest';
-import { createApp, devOutboxIntegration, models, seedPeople } from '../index.js';
+import { createApp, credentialsService, models, seedPeople, sessionAuth } from '../index.js';
 
-const { lastDevCode } = devOutboxIntegration;
 const { Biodata, User, nextSequence } = models;
 const { PEOPLE, demoSections } = seedPeople;
 
@@ -14,14 +15,14 @@ export const PASSWORD = 'Password1!';
 let n = 0;
 const uniq = () => `${Date.now().toString(36)}${(n += 1)}`;
 
-/** A cookie-keeping client that behaves like the website. */
+/** A client that behaves like the website (it always sends its origin). */
 export function client() {
   return request.agent(app).set('Origin', ORIGIN);
 }
 
 /**
- * Creates an account through Better Auth's sign-up endpoint, then applies the test
- * setup straight in the database (that is the only way to make an admin).
+ * Creates an email + password account the way the seed does (Better Auth's collections),
+ * then applies the test setup in the database (the only way to make an admin).
  */
 export async function createUser({
   role = 'user',
@@ -31,30 +32,40 @@ export async function createUser({
   name = 'Test User',
   email = `u${uniq()}@example.com`,
 } = {}) {
-  const res = await client().post('/api/auth/sign-up/email').send({ name, email, password });
-  if (res.status !== 200) throw new Error(`sign-up failed: ${res.status} ${JSON.stringify(res.body)}`);
-  await User.updateOne(
-    { _id: res.body.user.id },
-    { role, emailVerified: verified, connectionBalance: balance },
-  );
-  return User.findById(res.body.user.id);
+  const user = await credentialsService.createPasswordAccount({ name, email, password, verified });
+  await User.updateOne({ _id: user._id }, { role, connectionBalance: balance });
+  return User.findById(user._id);
 }
 
-/** A client signed in as `user` (email + password). */
-export async function login(user, password = PASSWORD) {
-  const agent = client();
-  const res = await agent.post('/api/auth/sign-in/email').send({ email: user.email, password });
-  if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${JSON.stringify(res.body)}`);
-  return agent;
+/**
+ * Starts a session for `user` exactly as Better Auth on the website would (a row in
+ * `session` and the signed `ghotok.session_token` cookie) and returns its token and cookie.
+ */
+export async function startSession(user, { expiresAt = new Date(Date.now() + 864e5) } = {}) {
+  const token = crypto.randomBytes(24).toString('base64url');
+  const now = new Date();
+  await mongoose.connection.collection('session').insertOne({
+    token,
+    userId: user._id,
+    expiresAt,
+    createdAt: now,
+    updatedAt: now,
+    ipAddress: '',
+    userAgent: 'vitest',
+  });
+  return { token, cookie: `ghotok.session_token=${sessionAuth.signedCookieValue(token)}` };
+}
+
+/** A client signed in as `user`. */
+export async function login(user) {
+  const { cookie } = await startSession(user);
+  return client().set('Cookie', cookie);
 }
 
 export async function userWithAgent(opts) {
   const user = await createUser(opts);
   return { user, agent: await login(user) };
 }
-
-/** The last one-time code "sent" to an email or phone number (OTP_DEV_ECHO is on in tests). */
-export const codeFor = (to) => lastDevCode(to);
 
 /** Creates a complete, approved biodata for a new user. */
 export async function approvedBiodata({ index = 0, overrides = {}, status = 'approved' } = {}) {

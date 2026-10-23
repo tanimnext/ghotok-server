@@ -1,7 +1,11 @@
 // Ghotok API: the whole server in one file.
 //
-// Express + MongoDB (Mongoose) + Better Auth. Run it with `node index.js` (see package.json),
-// seed the database with `node index.js seed` or `node index.js seed --demo`.
+// Express + MongoDB (Mongoose). Run it with `node index.js` (see package.json), seed the
+// database with `node index.js seed` or `node index.js seed --demo`.
+//
+// Sign-up, sign-in and SSLCommerz checkout run in the website (ghotok-client), which uses the
+// same MongoDB database: Better Auth there writes the `user`, `account` and `session`
+// collections, and this API reads the session cookie to know who is calling.
 //
 // How this file is organised
 // --------------------------
@@ -16,39 +20,32 @@
 //   2. Shared rules: options, locations, the biodata definition, permissions (copy kept in ghotok-client)
 //   3. Utilities
 //   4. Database models (Mongoose), collected in `models`
-//   5. Integrations: email, SMS, the SSLCommerz payment gateway
-//   6. Authentication (Better Auth)
-//   7. Services (business rules)
-//   8. Request validation schemas (Zod)
-//   9. Serializers (API response shapes)
-//   10. Middleware
-//   11. Controllers
-//   12. Routes
-//   13. Express application (`appModule.createApp`)
-//   14. Seed data and the seed script
-//   15. Start: running the server or the seed command, and the exports used by the tests
+//   5. Authentication: reading the website's Better Auth sessions (`sessionAuth`)
+//   6. Services (business rules)
+//   7. Request validation schemas (Zod)
+//   8. Serializers (API response shapes)
+//   9. Middleware
+//   10. Controllers
+//   11. Routes
+//   12. Express application (`appModule.createApp`)
+//   13. Seed data and the seed script
+//   14. Start: running the server or the seed command, and the exports used by the tests
 //
-// Request pipeline (see `appModule`): security headers → CORS → logging → Better Auth
-// (/api/auth) → JSON body → body sanitising → origin check → rate limit → load user → routes
-// → errors. Every route is listed in docs/API.md.
+// Request pipeline (see `appModule`): security headers → CORS → logging → cookies → JSON body
+// → body sanitising → origin check → rate limit → load user (session cookie) → routes → errors.
+// Every route is listed in docs/API.md.
 
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { betterAuth } from 'better-auth';
-import { mongodbAdapter } from 'better-auth/adapters/mongodb';
-import { APIError } from 'better-auth/api';
-import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
-import { emailOTP, phoneNumber } from 'better-auth/plugins';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import mongoose from 'mongoose';
-import nodemailer from 'nodemailer';
 import pino from 'pino';
 import { pinoHttp } from 'pino-http';
 import { z } from 'zod';
@@ -69,12 +66,6 @@ if (!process.env.VITEST) {
 }
 
 const envConfig = (() => {
-  const bool = (def) =>
-    z
-      .enum(['true', 'false', '1', '0', ''])
-      .optional()
-      .transform((v) => (v === undefined || v === '' ? def : v === 'true' || v === '1'));
-
   const list = (def) =>
     z
       .string()
@@ -93,45 +84,17 @@ const envConfig = (() => {
     PORT: z.coerce.number().int().default(4000),
     MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/ghotok'),
 
-    // Public URLs. CLIENT_URL is the website (members and admins); payment gateways
-    // redirect there and emails link to it. API_PUBLIC_URL is where gateways call back.
+    // Public URLs. CLIENT_URL is the website (members and admins). API_PUBLIC_URL is this
+    // API's own address (requests from it pass the origin check).
     CLIENT_URL: z.string().default('http://localhost:3000'),
     API_PUBLIC_URL: z.string().default('http://localhost:4000'),
     CORS_ORIGINS: list(['http://localhost:3000']),
     TRUST_PROXY: z.coerce.number().int().default(1),
 
-    // Auth (Better Auth). BETTER_AUTH_URL is the public URL the browser uses to reach
-    // /api/auth: the website's own URL when it proxies /api to this server.
-    BETTER_AUTH_URL: z.string().default('http://localhost:3000'),
+    // Sessions. ghotok-client runs Better Auth and signs members in; this API reads the
+    // same MongoDB `session` collection. BETTER_AUTH_SECRET must be the client's secret:
+    // it checks the signature of the session cookie.
     BETTER_AUTH_SECRET: z.string().min(32).default('dev-better-auth-secret-change-me-0123456789'),
-    COOKIE_SECURE: bool(false),
-    // Members must verify their email or phone before creating a biodata or contacting families.
-    REQUIRE_VERIFICATION: bool(true),
-    // Logs one-time codes and keeps the last one in memory. Never enable in production.
-    OTP_DEV_ECHO: bool(false),
-
-    // Email (SMTP). When SMTP_HOST is empty, emails are written to the log.
-    SMTP_HOST: z.string().optional(),
-    SMTP_PORT: z.coerce.number().int().default(587),
-    SMTP_USER: z.string().optional(),
-    SMTP_PASS: z.string().optional(),
-    MAIL_FROM: z.string().default('Ghotok <no-reply@ghotok.com.bd>'),
-
-    // SMS. When SMS_API_URL is empty, messages are written to the log.
-    // The URL may contain {number} and {message} placeholders (e.g. BulkSMSBD, SSL Wireless GET APIs).
-    SMS_API_URL: z.string().optional(),
-
-    // Sign in with Google (Better Auth): create OAuth credentials with the redirect URI
-    // <BETTER_AUTH_URL>/api/auth/callback/google. Leave empty to turn it off.
-    GOOGLE_CLIENT_ID: z.string().optional(),
-    GOOGLE_CLIENT_SECRET: z.string().optional(),
-
-    // Payments: SSLCommerz hosted checkout is the only way to pay (cards, bKash, Nagad, Rocket
-    // and internet banking on one page). Without these settings nobody can buy connections.
-    SSLCOMMERZ_ENABLED: bool(false),
-    SSLCOMMERZ_BASE_URL: z.string().default('https://sandbox.sslcommerz.com'),
-    SSLCOMMERZ_STORE_ID: z.string().optional(),
-    SSLCOMMERZ_STORE_PASSWORD: z.string().optional(),
 
     // Seed
     SEED_ADMIN_EMAIL: z.string().default('admin@ghotok.com.bd'),
@@ -151,10 +114,6 @@ const envConfig = (() => {
     if (env.NODE_ENV === 'production') {
       if (env.BETTER_AUTH_SECRET.startsWith('dev-')) {
         console.error('Set a strong BETTER_AUTH_SECRET in production.');
-        process.exit(1);
-      }
-      if (env.OTP_DEV_ECHO) {
-        console.error('OTP_DEV_ECHO must be false in production.');
         process.exit(1);
       }
     }
@@ -3516,8 +3475,8 @@ const userModel = (() => {
   const PHONE_EMAIL_DOMAIN = 'phone.ghotok.local';
 
   /**
-   * An account, stored in Better Auth's `user` collection. Better Auth creates and
-   * signs in accounts (name, email, emailVerified, image, phoneNumber,
+   * An account, stored in Better Auth's `user` collection. Better Auth (in ghotok-client)
+   * creates and signs in accounts (name, email, emailVerified, image, phoneNumber,
    * phoneNumberVerified, role, status, connectionBalance, language); this model adds
    * the fields only the API uses and lets the rest of the code query accounts.
    *
@@ -3608,362 +3567,103 @@ const models = (() => {
 })();
 
 // ==============================================================================================
-// INTEGRATIONS: EMAIL, SMS, PAYMENT GATEWAYS
+// AUTHENTICATION (SESSIONS CREATED BY GHOTOK-CLIENT)
 // ==============================================================================================
 
-// --- integrations/messaging/dev-outbox.js ------------------------------------------------------
-const devOutboxIntegration = (() => {
-  // With OTP_DEV_ECHO (development and tests only) the last code sent to each email or
-  // phone number is kept in memory and logged, so you can sign in without a mail or SMS
-  // provider. The API refuses to start in production with OTP_DEV_ECHO on.
-
-  const codes = new Map();
-
-  function recordDevCode(to, code) {
-    if (!envConfig.env.OTP_DEV_ECHO) return;
-    codes.set(to, code);
-    loggerConfig.logger.info({ to, code }, 'Development one-time code');
-  }
-
-  /** The last code sent to `to` (tests and local development only). */
-  function lastDevCode(to) {
-    return codes.get(to);
-  }
-
-  return { recordDevCode, lastDevCode };
-})();
-
-// --- integrations/messaging/email.js -----------------------------------------------------------
-const emailIntegration = (() => {
-  let transport;
-
-  function getTransport() {
-    if (!envConfig.env.SMTP_HOST) return null;
-    transport ??= nodemailer.createTransport({
-      host: envConfig.env.SMTP_HOST,
-      port: envConfig.env.SMTP_PORT,
-      secure: envConfig.env.SMTP_PORT === 465,
-      auth: envConfig.env.SMTP_USER
-        ? { user: envConfig.env.SMTP_USER, pass: envConfig.env.SMTP_PASS }
-        : undefined,
-    });
-    return transport;
-  }
-
-  /** Sends an email through SMTP, or logs it when SMTP is not configured (development). */
-  async function sendEmail({ to, subject, text, html }) {
-    const t = getTransport();
-    if (!t) {
-      loggerConfig.logger.info({ to, subject, text }, 'Email (SMTP not configured, logged instead)');
-      return;
-    }
-    await t.sendMail({ from: envConfig.env.MAIL_FROM, to, subject, text, html });
-  }
-
-  return { sendEmail };
-})();
-
-// --- integrations/messaging/sms.js -------------------------------------------------------------
-const smsIntegration = (() => {
-  /**
-   * Sends an SMS through any GET-based Bangladeshi SMS API configured in SMS_API_URL
-   * ({number} → 8801XXXXXXXXX, {message} → the text), or logs it when not configured.
-   */
-  async function sendSms({ to, message }) {
-    if (!envConfig.env.SMS_API_URL) {
-      loggerConfig.logger.info({ to, message }, 'SMS (gateway not configured, logged instead)');
-      return;
-    }
-    const url = envConfig.env.SMS_API_URL.replace('{number}', encodeURIComponent(`88${to}`)).replace(
-      '{message}',
-      encodeURIComponent(message),
-    );
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`SMS gateway responded ${res.status}`);
-  }
-
-  return { sendSms };
-})();
-
-// --- integrations/payments/sslcommerz.js -------------------------------------------------------
-const sslcommerzIntegration = (() => {
-  // SSLCommerz hosted checkout (https://developer.sslcommerz.com): cards, mobile
-  // banking (bKash, Nagad, Rocket and others) and internet banking. Flow:
-  // create a session → customer pays on GatewayPageURL → SSLCommerz POSTs the
-  // result to our return URL (and separately to the IPN URL) → we confirm it with
-  // the validation API before crediting anything.
-
-  const form = (data) => new URLSearchParams(Object.entries(data).map(([k, v]) => [k, String(v ?? '')]));
-
-  async function validate(valId) {
-    const url = new URL(`${envConfig.env.SSLCOMMERZ_BASE_URL}/validator/api/validationserverAPI.php`);
-    url.search = form({
-      val_id: valId,
-      store_id: envConfig.env.SSLCOMMERZ_STORE_ID,
-      store_passwd: envConfig.env.SSLCOMMERZ_STORE_PASSWORD,
-      format: 'json',
-    }).toString();
-    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`SSLCommerz validation failed with ${res.status}`);
-    return json;
-  }
-
-  const sslcommerz = {
-    name: 'sslcommerz',
-    get enabled() {
-      return (
-        envConfig.env.SSLCOMMERZ_ENABLED &&
-        !!(envConfig.env.SSLCOMMERZ_STORE_ID && envConfig.env.SSLCOMMERZ_STORE_PASSWORD)
-      );
-    },
-
-    /** @param {{ returnURL: string, ipnURL: string, customer: { name: string, email?: string, phone?: string } }} opts */
-    async startCheckout(payment, { returnURL, ipnURL, customer }) {
-      const res = await fetch(`${envConfig.env.SSLCOMMERZ_BASE_URL}/gwprocess/v4/api.php`, {
-        method: 'POST',
-        body: form({
-          store_id: envConfig.env.SSLCOMMERZ_STORE_ID,
-          store_passwd: envConfig.env.SSLCOMMERZ_STORE_PASSWORD,
-          total_amount: payment.amount.toFixed(2),
-          currency: 'BDT',
-          tran_id: payment.invoiceNo,
-          success_url: returnURL,
-          fail_url: returnURL,
-          cancel_url: returnURL,
-          ipn_url: ipnURL,
-          cus_name: customer.name,
-          cus_email: customer.email || 'no-email@ghotok.com.bd',
-          cus_phone: customer.phone || '01700000000',
-          cus_add1: 'Bangladesh',
-          cus_city: 'Dhaka',
-          cus_country: 'Bangladesh',
-          shipping_method: 'NO',
-          num_of_item: 1,
-          product_name: `${payment.connections} connections`,
-          product_category: 'Service',
-          product_profile: 'non-physical-goods',
-        }),
-        signal: AbortSignal.timeout(30000),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (json.status !== 'SUCCESS' || !json.GatewayPageURL) {
-        throw new Error(`SSLCommerz session failed: ${json.failedreason ?? JSON.stringify(json)}`);
-      }
-      return {
-        paymentId: payment.invoiceNo,
-        redirectURL: json.GatewayPageURL,
-        raw: { sessionkey: json.sessionkey },
-      };
-    },
-
-    /** `body` is SSLCommerz's form post to the return or IPN URL. */
-    async completeCheckout(body) {
-      const paymentId = body.tran_id;
-      if (body.status === 'CANCELLED') return { paymentId, success: false, cancelled: true, raw: body };
-      if (!body.val_id) return { paymentId, success: false, raw: body };
-      const v = await validate(body.val_id);
-      const success =
-        (v.status === 'VALID' || v.status === 'VALIDATED') && v.tran_id === paymentId && v.currency === 'BDT';
-      return {
-        paymentId,
-        success,
-        amount: Number(v.amount),
-        trxId: v.bank_tran_id || v.val_id,
-        raw: { status: v.status, val_id: v.val_id, card_type: v.card_type, risk_level: v.risk_level },
-      };
-    },
-  };
-
-  return { sslcommerz };
-})();
-
-// --- integrations/messaging/index.js -----------------------------------------------------------
-const messaging = (() => {
-  /** Sends a message to an email address or a phone number, whichever `to` is. Never throws. */
-  async function deliver(to, { subject, text }) {
-    try {
-      if (to.includes('@')) await emailIntegration.sendEmail({ to, subject, text });
-      else await smsIntegration.sendSms({ to, message: text });
-    } catch (err) {
-      loggerConfig.logger.error({ err, to }, 'Message delivery failed');
-    }
-  }
-
-  return { deliver, sendEmail: emailIntegration.sendEmail, sendSms: smsIntegration.sendSms };
-})();
-
-// --- integrations/payments/index.js ------------------------------------------------------------
-const paymentGateways = (() => {
-  // SSLCommerz is the only payment gateway; every payment is an SSLCommerz checkout.
-  const gateways = { sslcommerz: sslcommerzIntegration.sslcommerz };
-
-  /** The gateway for a method, or null when it is unknown or not configured. */
-  function gatewayFor(method) {
-    const g = gateways[method];
-    return g?.enabled ? g : null;
-  }
-
-  const checkoutEnabled = () => gateways.sslcommerz.enabled;
-
-  return { gateways, gatewayFor, checkoutEnabled };
-})();
-
-// ==============================================================================================
-// AUTHENTICATION (BETTER AUTH)
-// ==============================================================================================
-
-// --- config/auth.js ----------------------------------------------------------------------------
-const authConfig = (() => {
-  // Authentication is handled by Better Auth (https://www.better-auth.com), mounted at
-  // /api/auth by app.js. It stores its data in the same MongoDB database, in the
-  // `user`, `session`, `account` and `verification` collections; the rest of the API
-  // reads accounts through the Mongoose `User` model (models/user.model.js).
+// --- auth/session.js ---------------------------------------------------------------------------
+const sessionAuth = (() => {
+  // Members sign up and sign in on the website (ghotok-client), which runs Better Auth with
+  // email + password and stores its data in the same MongoDB database: `user`, `account`,
+  // `session` and `verification`. This API never signs anyone in. It reads the session
+  // cookie Better Auth sets, checks its signature with the shared BETTER_AUTH_SECRET and
+  // looks the token up in the `session` collection.
   //
-  // Members sign in with email + password, a one-time code by email or SMS, or Google.
-  // Every new account gets the role "user". An account becomes an admin only when its
-  // `role` is changed to "admin" in the database (or by another admin).
+  // Better Auth's cookie value is encodeURIComponent(`${token}.${signature}`), where the
+  // signature is base64(HMAC-SHA256(secret, token)).
 
-  const OTP_MINUTES = 10;
-  const INACTIVE = ['suspended', 'banned'];
+  const COOKIE_NAMES = ['ghotok.session_token', '__Secure-ghotok.session_token'];
 
-  const MESSAGES = {
-    'sign-in': ['Your Ghotok sign-in code', 'sign-in code', 'লগইন কোড'],
-    'email-verification': ['Verify your Ghotok account', 'verification code', 'যাচাই কোড'],
-    'forget-password': ['Reset your Ghotok password', 'password reset code', 'পাসওয়ার্ড রিসেট কোড'],
-    'change-email': ['Confirm your new email', 'confirmation code', 'নিশ্চিতকরণ কোড'],
-  };
+  const signatureOf = (token) =>
+    crypto.createHmac('sha256', envConfig.env.BETTER_AUTH_SECRET).update(token).digest('base64');
 
-  /** Sends a code by email or SMS. Not awaited by the caller, so timing does not reveal accounts. */
-  function sendCode(to, purpose, code) {
-    const [subject, en, bn] = MESSAGES[purpose] ?? MESSAGES['sign-in'];
-    devOutboxIntegration.recordDevCode(to, code);
-    return messaging.deliver(to, {
-      subject,
-      text: `Ghotok: your ${en} is ${code}. It expires in ${OTP_MINUTES} minutes. Never share it. / ঘটক ${bn}: ${code}`,
-    });
-  }
-
-  /** Rejects suspended or banned accounts; signing in again reactivates a deactivated one. */
-  async function beforeSessionCreate(session) {
-    const users = mongoose.connection.collection('user');
-    const user = await users.findOne(
-      { _id: new mongoose.Types.ObjectId(String(session.userId)) },
-      { projection: { status: 1 } },
-    );
-    if (INACTIVE.includes(user?.status)) {
-      throw new APIError('FORBIDDEN', {
-        code: 'ACCOUNT_INACTIVE',
-        message: `Your account is ${user.status}. Please contact support.`,
-      });
+  /** The session token from a signed cookie value, or null when the signature is wrong. */
+  function tokenFromCookie(raw) {
+    if (!raw) return null;
+    let value;
+    try {
+      value = decodeURIComponent(raw);
+    } catch {
+      return null;
     }
-    const set = { lastLoginAt: new Date() };
-    if (user?.status === 'deactivated') Object.assign(set, { status: 'active', deactivatedAt: null });
-    await users.updateOne({ _id: user._id }, { $set: set });
+    const dot = value.lastIndexOf('.');
+    if (dot <= 0) return null;
+    const token = value.slice(0, dot);
+    const given = Buffer.from(value.slice(dot + 1));
+    const expected = Buffer.from(signatureOf(token));
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected) ? token : null;
   }
 
-  function createAuth() {
-    return betterAuth({
-      appName: 'Ghotok',
-      baseURL: envConfig.env.BETTER_AUTH_URL,
-      basePath: '/api/auth',
-      secret: envConfig.env.BETTER_AUTH_SECRET,
-      trustedOrigins: envConfig.env.CORS_ORIGINS,
-      // Mongoose owns the connection; Better Auth uses the same database. A standalone
-      // MongoDB (no replica set) cannot run transactions, so they are off.
-      database: mongodbAdapter(mongoose.connection.db, { transaction: false }),
-      emailAndPassword: {
-        enabled: true,
-        minPasswordLength: 8,
-        maxPasswordLength: 128,
-        requireEmailVerification: false,
-        revokeSessionsOnPasswordReset: true,
-      },
-      socialProviders:
-        envConfig.env.GOOGLE_CLIENT_ID && envConfig.env.GOOGLE_CLIENT_SECRET
-          ? {
-              google: {
-                clientId: envConfig.env.GOOGLE_CLIENT_ID,
-                clientSecret: envConfig.env.GOOGLE_CLIENT_SECRET,
-              },
-            }
-          : {},
-      account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },
-      session: {
-        expiresIn: 60 * 60 * 24 * 30, // 30 days; "remember me" off ends it with the browser session
-        updateAge: 60 * 60 * 24,
-      },
-      user: {
-        additionalFields: {
-          // input: false — a client can never choose these at sign-up or with update-user.
-          role: { type: 'string', defaultValue: 'user', input: false },
-          status: { type: 'string', defaultValue: 'active', input: false },
-          connectionBalance: { type: 'number', defaultValue: 0, input: false },
-          language: { type: 'string', defaultValue: 'en', required: false },
-        },
-      },
-      databaseHooks: {
-        user: {
-          create: {
-            // Belt and braces: whatever the source (sign-up, OTP, Google), a new account is a member.
-            before: async (user) => ({ data: { ...user, role: 'user', status: 'active' } }),
-          },
-        },
-        session: { create: { before: beforeSessionCreate } },
-      },
-      plugins: [
-        emailOTP({
-          otpLength: 6,
-          expiresIn: OTP_MINUTES * 60,
-          allowedAttempts: 5,
-          storeOTP: 'hashed',
-          sendVerificationOnSignUp: true,
-          async sendVerificationOTP({ email, otp, type }) {
-            void sendCode(email, type, otp);
-          },
-        }),
-        phoneNumber({
-          otpLength: 6,
-          expiresIn: OTP_MINUTES * 60,
-          allowedAttempts: 5,
-          // Numbers are stored as 01XXXXXXXXX; the client normalises before sending.
-          phoneNumberValidator: (value) =>
-            value === shared.normalizePhone(value) && shared.isValidPhone(value),
-          sendOTP: ({ phoneNumber: to, code }) => {
-            void sendCode(to, 'sign-in', code);
-          },
-          sendPasswordResetOTP: ({ phoneNumber: to, code }) => {
-            void sendCode(to, 'forget-password', code);
-          },
-          // A first sign-in by SMS code creates the account (no password until the member sets one).
-          signUpOnVerification: {
-            getTempEmail: (value) => `${value}@phone.ghotok.local`,
-            getTempName: (value) => value,
-          },
-        }),
-      ],
-      advanced: {
-        cookiePrefix: 'ghotok',
-        useSecureCookies: envConfig.env.COOKIE_SECURE,
-        ipAddress: { ipAddressHeaders: ['x-forwarded-for'] },
-      },
-      rateLimit: { enabled: envConfig.env.NODE_ENV === 'production', window: 60, max: 100 },
-    });
-  }
-
-  let instance;
+  /** Signs a token the way Better Auth does (tests and tools). */
+  const signedCookieValue = (token) => encodeURIComponent(`${token}.${signatureOf(token)}`);
 
   /**
-   * The Better Auth instance, created on first use (after Mongoose has connected,
-   * because the adapter needs the database handle).
+   * The live session for a request (from the session cookie), or null.
+   * @returns {Promise<{ id: string, token: string, userId: import('mongoose').Types.ObjectId } | null>}
    */
-  function getAuth() {
-    if (!mongoose.connection.db) throw new Error('Connect to MongoDB before using auth.');
-    instance ??= createAuth();
-    return instance;
+  async function sessionFromRequest(req) {
+    const raw = COOKIE_NAMES.map((name) => req.cookies?.[name]).find(Boolean);
+    const token = tokenFromCookie(raw);
+    if (!token) return null;
+    const session = await mongoose.connection
+      .collection('session')
+      .findOne({ token, expiresAt: { $gt: new Date() } });
+    if (!session) return null;
+    return { id: String(session._id), token, userId: session.userId };
   }
 
-  return { getAuth };
+  /** Signs a user out of every device (role changes, suspensions, deactivation). */
+  async function revokeAllSessions(userId) {
+    const id = new mongoose.Types.ObjectId(String(userId));
+    await mongoose.connection
+      .collection('session')
+      .deleteMany({ $or: [{ userId: id }, { userId: String(userId) }] });
+  }
+
+  // Passwords use Better Auth's format, `${salt}:${key}` in hex with scrypt (N 16384, r 16,
+  // p 1, 64 bytes, NFKC-normalised password), so accounts the seed creates sign in on the
+  // website like any other.
+  const SCRYPT = { N: 16384, r: 16, p: 1, maxmem: 128 * 16384 * 16 * 2 };
+
+  function scryptKey(password, salt) {
+    return new Promise((resolve, reject) =>
+      crypto.scrypt(password.normalize('NFKC'), salt, 64, SCRYPT, (err, key) =>
+        err ? reject(err) : resolve(key),
+      ),
+    );
+  }
+
+  async function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    return `${salt}:${(await scryptKey(password, salt)).toString('hex')}`;
+  }
+
+  async function verifyPassword(hash, password) {
+    const [salt, key] = String(hash).split(':');
+    if (!salt || !key) return false;
+    const actual = await scryptKey(password, salt);
+    const expected = Buffer.from(key, 'hex');
+    return expected.length === actual.length && crypto.timingSafeEqual(actual, expected);
+  }
+
+  return {
+    COOKIE_NAMES,
+    tokenFromCookie,
+    signedCookieValue,
+    sessionFromRequest,
+    revokeAllSessions,
+    hashPassword,
+    verifyPassword,
+  };
 })();
 
 // ==============================================================================================
@@ -3972,8 +3672,8 @@ const authConfig = (() => {
 
 // --- services/account.service.js ---------------------------------------------------------------
 const accountService = (() => {
-  // A member managing their own account. Passwords, sessions and sign-in methods are
-  // changed through Better Auth's endpoints (/api/auth/*) from the client.
+  // A member managing their own account. Passwords and sessions are changed through
+  // Better Auth on the website (ghotok-client).
 
   async function updateProfile(user, { name, language }) {
     if (name !== undefined) user.name = name;
@@ -3984,13 +3684,10 @@ const accountService = (() => {
 
   /**
    * Deactivates the account: removes the biodata, withdraws proposals and signs out
-   * everywhere. Accounts with a password must confirm it; signing in again reactivates.
+   * everywhere. The member confirms with their password; signing in again reactivates.
    */
   async function deactivate(user, { password, reason }) {
-    if (
-      (await credentialsService.hasPassword(user._id)) &&
-      !(password && (await credentialsService.checkPassword(user._id, password)))
-    ) {
+    if (!(password && (await credentialsService.checkPassword(user._id, password)))) {
       throw new apiErrorUtils.ApiError(400, 'WRONG_PASSWORD', 'The password is incorrect.', {
         fields: { password: 'invalid' },
       });
@@ -5099,47 +4796,6 @@ const connectionService = (() => {
   }
 
   /**
-   * Marks a payment verified and credits its connections exactly once — safe when the
-   * SSLCommerz return and its IPN arrive at the same moment.
-   * @returns {Promise<object | null>} the payment, or null if it was already processed
-   */
-  async function creditPayment(paymentId, { actor, trxId, gatewayResponse } = {}) {
-    const set = { status: 'verified', creditedAt: new Date(), reviewedAt: new Date() };
-    if (actor) set.reviewedBy = actor;
-    if (trxId) set.trxId = trxId;
-    if (gatewayResponse) set['gateway.response'] = gatewayResponse;
-    const payment = await models.Payment.findOneAndUpdate(
-      { _id: paymentId, status: 'initiated', creditedAt: null },
-      { $set: set },
-      { new: true },
-    );
-    if (!payment) return null;
-    try {
-      await changeBalance(payment.user, payment.connections, {
-        type: 'purchase',
-        payment: payment._id,
-        actor,
-        reason: payment.invoiceNo,
-      });
-    } catch (err) {
-      // Put the payment back so the gateway's next notice can credit it.
-      await models.Payment.updateOne(
-        { _id: payment._id },
-        { $set: { status: 'initiated' }, $unset: { creditedAt: 1 } },
-      );
-      loggerConfig.logger.error({ err, payment: payment.invoiceNo }, 'Crediting a payment failed');
-      throw err;
-    }
-    await notificationService.notify(
-      payment.user,
-      'payment_verified',
-      { invoiceNo: payment.invoiceNo, connections: payment.connections },
-      '/dashboard/connections',
-    );
-    return payment;
-  }
-
-  /**
    * Unlocks a biodata's guardian contact, charging one connection the first time
    * only. The unique (user, biodata) index makes double clicks and parallel
    * requests safe: the unlock row is created first, then the balance is charged.
@@ -5259,7 +4915,7 @@ const connectionService = (() => {
     );
   }
 
-  return { changeBalance, creditPayment, unlockContact, myConnections, adjustConnections, listLedger };
+  return { changeBalance, unlockContact, myConnections, adjustConnections, listLedger };
 })();
 
 // --- services/content.service.js ---------------------------------------------------------------
@@ -5307,10 +4963,7 @@ const contentService = (() => {
       payments: {
         approvalGift: payments.approvalGift,
         approvedDiscountPercent: payments.approvedDiscountPercent,
-        checkoutEnabled: paymentGateways.checkoutEnabled(),
       },
-      // Sign-in options the client should offer (Better Auth handles Google itself).
-      auth: { google: !!(envConfig.env.GOOGLE_CLIENT_ID && envConfig.env.GOOGLE_CLIENT_SECRET) },
     };
   }
 
@@ -5421,76 +5074,56 @@ const contentService = (() => {
 
 // --- services/credentials.service.js -----------------------------------------------------------
 const credentialsService = (() => {
-  // Server-side account work that has no Better Auth HTTP endpoint: accounts created by
-  // the seed or by an admin, password checks for sensitive actions, staff password
-  // resets and signing a user out everywhere. Everything goes through Better Auth's
-  // own adapter and password hashing, so these accounts sign in like any other.
+  // Password accounts written straight to Better Auth's collections (the seed), and the
+  // password check for sensitive actions. Members create accounts on the website.
 
-  const context = () => authConfig.getAuth().$context;
-  const id = (userId) => String(userId);
+  const accounts = () => mongoose.connection.collection('account');
 
   /**
-   * Creates an email + password account. Better Auth gives every new account the role
-   * "user"; `role` is applied afterwards so only server code can create admins.
+   * Creates an email + password account that can sign in on the website.
    * @returns {Promise<import('mongoose').Document>} the Mongoose User
    */
-  async function createPasswordAccount({ name, email, phoneNumber, password, role = 'user', verified }) {
-    const ctx = await context();
-    const created = await ctx.internalAdapter.createUser(
-      {
-        name,
-        email: email.toLowerCase(),
-        emailVerified: !!verified,
-        ...(phoneNumber ? { phoneNumber, phoneNumberVerified: !!verified } : {}),
-      },
-      { method: 'admin' },
-    );
-    await ctx.internalAdapter.createAccount({
-      userId: created.id,
-      providerId: 'credential',
-      accountId: created.id,
-      password: await ctx.password.hash(password),
+  async function createPasswordAccount({
+    name,
+    email,
+    phoneNumber,
+    password,
+    role = 'user',
+    verified = false,
+  }) {
+    const now = new Date();
+    const user = await models.User.create({
+      name,
+      email: email.toLowerCase(),
+      role,
+      emailVerified: verified,
+      ...(phoneNumber ? { phoneNumber, phoneNumberVerified: verified } : {}),
     });
-    if (role !== 'user') await models.User.updateOne({ _id: created.id }, { role });
-    return models.User.findById(created.id);
+    await accounts().insertOne({
+      accountId: user._id.toString(),
+      providerId: 'credential',
+      userId: user._id,
+      password: await sessionAuth.hashPassword(password),
+      createdAt: now,
+      updatedAt: now,
+    });
+    return user;
+  }
+
+  async function credentialOf(userId) {
+    return accounts().findOne({
+      providerId: 'credential',
+      $or: [{ userId: new mongoose.Types.ObjectId(String(userId)) }, { userId: String(userId) }],
+    });
   }
 
   /** True when the account has a password and `password` matches it. */
   async function checkPassword(userId, password) {
-    const ctx = await context();
-    const account = await ctx.internalAdapter.findCredentialAccount(id(userId));
-    if (!account?.password) return false;
-    return ctx.password.verify({ hash: account.password, password });
+    const account = await credentialOf(userId);
+    return !!account?.password && sessionAuth.verifyPassword(account.password, password);
   }
 
-  /** True when the account can sign in with a password (members who only use codes or Google cannot). */
-  async function hasPassword(userId) {
-    const ctx = await context();
-    return !!(await ctx.internalAdapter.findCredentialAccount(id(userId)))?.password;
-  }
-
-  /** Sets a new password (adding one to code-only accounts) and signs the user out everywhere. */
-  async function setPassword(userId, password) {
-    const ctx = await context();
-    const hash = await ctx.password.hash(password);
-    const account = await ctx.internalAdapter.findCredentialAccount(id(userId));
-    if (account) await ctx.internalAdapter.updatePassword(id(userId), hash);
-    else
-      await ctx.internalAdapter.createAccount({
-        userId: id(userId),
-        providerId: 'credential',
-        accountId: id(userId),
-        password: hash,
-      });
-    await revokeAllSessions(userId);
-  }
-
-  async function revokeAllSessions(userId) {
-    const ctx = await context();
-    await ctx.internalAdapter.deleteUserSessions(id(userId));
-  }
-
-  return { createPasswordAccount, checkPassword, hasPassword, setPassword, revokeAllSessions };
+  return { createPasswordAccount, checkPassword, revokeAllSessions: sessionAuth.revokeAllSessions };
 })();
 
 // --- services/dashboard.service.js -------------------------------------------------------------
@@ -5809,9 +5442,9 @@ const packageService = (() => {
 
 // --- services/payment.service.js ---------------------------------------------------------------
 const paymentService = (() => {
-  // Buying connection packages. SSLCommerz is the only way to pay: the member picks a package,
-  // pays on SSLCommerz's page (card, bKash, Nagad, Rocket or internet banking), and the payment
-  // is credited when SSLCommerz reports it and its validation API confirms it.
+  // Connection packages and payment history. Members pay on SSLCommerz's page; the checkout
+  // and crediting run in ghotok-client (its /api/checkout routes write to the same
+  // `payments` collection). This API lists packages and payments and handles refunds.
 
   /** The member's package discount in percent: members whose biodata is live may get one (site setting). */
   async function discountFor(user) {
@@ -5824,7 +5457,7 @@ const paymentService = (() => {
 
   const discounted = (price, percent) => Math.round(price * (1 - percent / 100));
 
-  /** Active packages (with the member's discounted price) and whether checkout is available. */
+  /** Active packages, with the member's discounted price when a discount applies. */
   async function catalogue(user) {
     const [packages, discount] = await Promise.all([
       models.Package.find({ isActive: true }).sort({ sortOrder: 1, price: 1 }),
@@ -5835,107 +5468,7 @@ const paymentService = (() => {
         ...paymentSerializer.toPackageDTO(p),
         ...(discount ? { discountPercent: discount, finalPrice: discounted(p.price, discount) } : {}),
       })),
-      checkout: { enabled: paymentGateways.checkoutEnabled() },
     };
-  }
-
-  async function nextInvoiceNo() {
-    const d = new Date();
-    const ymd = d.toISOString().slice(2, 10).replace(/-/g, '');
-    return `INV-${ymd}-${await models.nextSequence('invoice', 10000)}`;
-  }
-
-  /**
-   * Starts an SSLCommerz checkout for a package.
-   * @returns {Promise<{ payment: object, redirectURL: string }>} redirectURL is SSLCommerz's payment page
-   */
-  async function createPayment(user, { packageId }, { ip } = {}) {
-    const gateway = paymentGateways.gatewayFor('sslcommerz');
-    if (!gateway) {
-      throw new apiErrorUtils.ApiError(
-        503,
-        'PAYMENTS_UNAVAILABLE',
-        'Online payment is not available right now. Please try again later or contact support.',
-      );
-    }
-    const pkg = await models.Package.findOne({ _id: packageId, isActive: true });
-    if (!pkg) throw apiErrorUtils.notFound('Package');
-    const discount = await discountFor(user);
-    const payment = await models.Payment.create({
-      user: user._id,
-      package: pkg._id,
-      packageName: pkg.name,
-      connections: pkg.connections,
-      amount: discounted(pkg.price, discount),
-      method: 'sslcommerz',
-      mode: 'gateway',
-      status: 'initiated',
-      invoiceNo: await nextInvoiceNo(),
-    });
-    try {
-      const started = await gateway.startCheckout(payment, {
-        returnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/sslcommerz/return`,
-        ipnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/sslcommerz/ipn`,
-        customer: { name: user.name, email: userSerializer.contactEmail(user), phone: user.phoneNumber },
-        ip,
-      });
-      payment.gateway = { paymentId: started.paymentId, response: started.raw };
-      await payment.save();
-      return { payment: paymentSerializer.toPaymentDTO(payment), redirectURL: started.redirectURL };
-    } catch (err) {
-      loggerConfig.logger.error({ err, invoice: payment.invoiceNo }, 'Checkout failed to start');
-      payment.status = 'failed';
-      await payment.save();
-      throw new apiErrorUtils.ApiError(
-        502,
-        'GATEWAY_ERROR',
-        'The payment gateway is not responding. Please try again in a few minutes.',
-      );
-    }
-  }
-
-  /**
-   * Handles SSLCommerz's result (the customer's return or the IPN). The gateway's validation
-   * API is authoritative, and the paid amount must match before connections are credited.
-   * Safe to call more than once for the same payment.
-   * @returns {Promise<{ status: 'success' | 'failed' | 'cancelled', invoiceNo?: string }>}
-   */
-  async function completeGatewayCheckout(method, body) {
-    const gateway = paymentGateways.gatewayFor(method);
-    if (!gateway) return { status: 'failed' };
-    let result;
-    try {
-      result = await gateway.completeCheckout(body);
-    } catch (err) {
-      loggerConfig.logger.error({ err, method }, 'Gateway result could not be checked');
-      return { status: 'failed' };
-    }
-    const payment = result.paymentId
-      ? await models.Payment.findOne({ 'gateway.paymentId': result.paymentId, method })
-      : null;
-    if (!payment) return { status: 'failed' };
-    if (payment.status === 'verified') return { status: 'success', invoiceNo: payment.invoiceNo };
-
-    const amountMatches = result.amount === undefined || Math.abs(result.amount - payment.amount) < 0.01;
-    if (result.success && amountMatches) {
-      await connectionService.creditPayment(payment._id, {
-        trxId: result.trxId,
-        gatewayResponse: result.raw,
-      });
-      return { status: 'success', invoiceNo: payment.invoiceNo };
-    }
-    if (result.success && !amountMatches) {
-      loggerConfig.logger.warn(
-        { invoice: payment.invoiceNo, paid: result.amount, expected: payment.amount },
-        'Paid amount does not match the invoice; not credited',
-      );
-    }
-    const status = result.cancelled ? 'cancelled' : 'failed';
-    await models.Payment.updateOne(
-      { _id: payment._id, status: 'initiated' },
-      { status, 'gateway.response': result.raw },
-    );
-    return { status, invoiceNo: payment.invoiceNo };
   }
 
   /** One of the member's payments by invoice number, for the receipt page. */
@@ -5997,8 +5530,6 @@ const paymentService = (() => {
   return {
     discountFor,
     catalogue,
-    createPayment,
-    completeGatewayCheckout,
     paymentStatus,
     myPayments,
     listPayments,
@@ -6975,7 +6506,9 @@ const ticketService = (() => {
 
 // --- services/user.service.js ------------------------------------------------------------------
 const userService = (() => {
-  // Admin management of accounts: search, roles, suspension, account creation.
+  // Admin management of accounts: search, roles, suspension. Creating accounts and setting
+  // passwords need Better Auth's password hashing, so the admin dashboard does those through
+  // Better Auth's admin plugin on the website.
 
   const INACTIVE = ['suspended', 'banned'];
 
@@ -7134,44 +6667,7 @@ const userService = (() => {
     return userSerializer.toUserDTO(user);
   }
 
-  /** Creates an email + password account from the admin panel. It is treated as verified. */
-  async function createUser({ name, email, phoneNumber, password, role }, ctx) {
-    if (role !== 'user' && !shared.can(ctx.actor.role, 'roles.assign')) throw apiErrorUtils.forbidden();
-    const or = [{ email }, phoneNumber && { phoneNumber }].filter(Boolean);
-    if (await models.User.exists({ $or: or }))
-      throw apiErrorUtils.conflict(
-        'ACCOUNT_EXISTS',
-        'An account with this email or mobile number already exists.',
-      );
-    const user = await credentialsService.createPasswordAccount({
-      name,
-      email,
-      phoneNumber,
-      password,
-      role,
-      verified: true,
-    });
-    await auditService.recordAudit(ctx, 'user.create', {
-      targetType: 'user',
-      targetId: user._id,
-      summary: `Created ${role} ${user.name}`,
-    });
-    return userSerializer.toUserDTO(user);
-  }
-
-  async function resetUserPassword(id, password, ctx) {
-    const user = await models.User.findById(id);
-    if (!user) throw apiErrorUtils.notFound('User');
-    await credentialsService.setPassword(user._id, password);
-    await notificationService.notify(user._id, 'password_reset_by_staff', {});
-    await auditService.recordAudit(ctx, 'user.reset_password', {
-      targetType: 'user',
-      targetId: user._id,
-      summary: `Reset password of ${user.name}`,
-    });
-  }
-
-  return { findUserByAny, listUsers, getUserDetail, updateUser, createUser, resetUserPassword };
+  return { findUserByAny, listUsers, getUserDetail, updateUser };
 })();
 
 // --- services/visit.service.js -----------------------------------------------------------------
@@ -7395,16 +6891,6 @@ const adminValidation = (() => {
     phoneNumberVerified: z.boolean().optional(),
   });
 
-  const createUser = z.object({
-    name: z.string().trim().min(2).max(80),
-    email: commonValidation.optionalEmail.refine(Boolean, 'Enter an email address.'),
-    phoneNumber: commonValidation.optionalPhone,
-    password: commonValidation.password,
-    role: z.enum(shared.optionValues(shared.ROLE_OPTIONS)).default('user'),
-  });
-
-  const resetUserPassword = z.object({ password: commonValidation.password });
-
   // ----- Content and settings -----------------------------------------------------------
 
   const settingsParams = z.object({ key: z.enum(['site', 'payments', 'stats']) });
@@ -7480,8 +6966,6 @@ const adminValidation = (() => {
     restoreRequestsQuery,
     usersQuery,
     updateUser,
-    createUser,
-    resetUserPassword,
     settingsParams,
     updateSettings,
     pageParams,
@@ -7626,9 +7110,6 @@ const biodataValidation = (() => {
 
 // --- validations/payment.validation.js ---------------------------------------------------------
 const paymentValidation = (() => {
-  /** Buying a package: the only choice is which one; SSLCommerz handles the rest. */
-  const createPayment = z.object({ packageId: commonValidation.objectId });
-
   const requestRefund = z.object({
     paymentId: commonValidation.objectId,
     reason: z.string().trim().min(10, 'Please explain the reason.').max(1000),
@@ -7697,11 +7178,7 @@ const paymentValidation = (() => {
       .regex(/^INV-[A-Z0-9-]{4,40}$/i),
   });
 
-  /** Gateways that post their result back to us (form posts from the customer's browser and IPN). */
-  const postbackParams = z.object({ method: z.enum(['sslcommerz']) });
-
   return {
-    createPayment,
     requestRefund,
     paymentsQuery,
     refundsQuery,
@@ -7712,7 +7189,6 @@ const paymentValidation = (() => {
     createPackage,
     updatePackage,
     invoiceParams,
-    postbackParams,
   };
 })();
 
@@ -8077,15 +7553,16 @@ const userSerializer = (() => {
 // --- middlewares/auth.js -----------------------------------------------------------------------
 const authMiddleware = (() => {
   /**
-   * Loads `req.user` (the Mongoose User) and `req.session` (Better Auth's session) when
-   * the request carries a valid session cookie. It never rejects a request itself.
+   * Loads `req.user` (the Mongoose User) and `req.session` when the request carries a valid
+   * session cookie from the website's Better Auth (see `sessionAuth`). It never rejects a
+   * request itself.
    */
   async function loadUser(req, _res, next) {
     try {
-      const result = await authConfig.getAuth().api.getSession({ headers: fromNodeHeaders(req.headers) });
-      if (result) {
-        req.session = result.session;
-        req.user = (await models.User.findById(result.user.id)) ?? undefined;
+      const session = await sessionAuth.sessionFromRequest(req);
+      if (session) {
+        req.session = session;
+        req.user = (await models.User.findById(session.userId)) ?? undefined;
       }
       next();
     } catch (err) {
@@ -8103,17 +7580,6 @@ const authMiddleware = (() => {
           'ACCOUNT_INACTIVE',
           `Your account is ${req.user.status}. Please contact support.`,
         ),
-      );
-    }
-    next();
-  }
-
-  /** Requires a verified email or phone number (when REQUIRE_VERIFICATION is on). Admins are always allowed. */
-  function requireVerified(req, _res, next) {
-    const verified = req.user?.emailVerified || req.user?.phoneNumberVerified;
-    if (envConfig.env.REQUIRE_VERIFICATION && !verified && !shared.isStaff(req.user?.role)) {
-      return next(
-        new apiErrorUtils.ApiError(403, 'NOT_VERIFIED', 'Please verify your email or phone number first.'),
       );
     }
     next();
@@ -8137,7 +7603,7 @@ const authMiddleware = (() => {
     };
   }
 
-  return { loadUser, requireAuth, requireVerified, requireAdmin, requirePermission };
+  return { loadUser, requireAuth, requireAdmin, requirePermission };
 })();
 
 // --- middlewares/error.js ----------------------------------------------------------------------
@@ -8748,16 +8214,7 @@ const adminUserController = (() => {
     });
   }
 
-  async function create(req, res) {
-    res.status(201).json({ user: await userService.createUser(req.body, requestUtils.requestContext(req)) });
-  }
-
-  async function resetPassword(req, res) {
-    await userService.resetUserPassword(req.params.id, req.body.password, requestUtils.requestContext(req));
-    res.json({ ok: true });
-  }
-
-  return { list, get, update, create, resetPassword };
+  return { list, get, update };
 })();
 
 // --- controllers/biodata.controller.js ---------------------------------------------------------
@@ -8964,31 +8421,6 @@ const paymentController = (() => {
     res.json(await paymentService.catalogue(req.user));
   }
 
-  async function create(req, res) {
-    res
-      .status(201)
-      .json(await paymentService.createPayment(req.user, req.body, requestUtils.requestContext(req)));
-  }
-
-  /** Sends the member to their receipt page for the payment (or the connections page without one). */
-  function redirectToReceipt(res, { status, invoiceNo }) {
-    const target = invoiceNo
-      ? `/dashboard/payment/${encodeURIComponent(invoiceNo)}?result=${status}`
-      : `/dashboard/connections?payment=${status}`;
-    res.redirect(303, `${envConfig.env.CLIENT_URL}${target}`);
-  }
-
-  /** SSLCommerz posts the result from the customer's browser; we finish the payment and redirect. */
-  async function gatewayReturn(req, res) {
-    redirectToReceipt(res, await paymentService.completeGatewayCheckout(req.params.method, req.body ?? {}));
-  }
-
-  /** SSLCommerz's server-to-server notification; idempotent with the return above. */
-  async function gatewayIpn(req, res) {
-    const { status } = await paymentService.completeGatewayCheckout(req.params.method, req.body ?? {});
-    res.json({ ok: true, status });
-  }
-
   async function status(req, res) {
     res.json({ payment: await paymentService.paymentStatus(req.user, req.params.invoiceNo) });
   }
@@ -9007,9 +8439,6 @@ const paymentController = (() => {
 
   return {
     catalogue,
-    create,
-    gatewayReturn,
-    gatewayIpn,
     status,
     mine,
     requestRefund,
@@ -9116,7 +8545,7 @@ const accountRoutes = (() => {
 // --- routes/biodata.routes.js ------------------------------------------------------------------
 const biodataRoutes = (() => {
   const router = Router();
-  const member = [authMiddleware.requireAuth, authMiddleware.requireVerified];
+  const member = [authMiddleware.requireAuth];
   const byNumber = validateMiddleware.validate({ params: biodataValidation.biodataNoParams });
 
   // ----- The member's own biodata (registered before /:no so "me" is never read as a number) -----
@@ -9253,43 +8682,11 @@ const contentRoutes = (() => {
   return __default;
 })();
 
-// --- routes/gateway.routes.js ------------------------------------------------------------------
-const gatewayRoutes = (() => {
-  // Payment gateway postbacks: /api/gateway. Mounted before the origin check (the
-  // gateway's own page submits the form), so nothing here trusts the request: every
-  // result is confirmed with the gateway's validation API before crediting.
-  const router = Router();
-  router.use(express.urlencoded({ extended: false, limit: '50kb' }));
-
-  router.post(
-    '/:method/return',
-    validateMiddleware.validate({ params: paymentValidation.postbackParams }),
-    paymentController.gatewayReturn,
-  );
-  router.post(
-    '/:method/ipn',
-    validateMiddleware.validate({ params: paymentValidation.postbackParams }),
-    paymentController.gatewayIpn,
-  );
-
-  const __default = router;
-
-  return __default;
-})();
-
 // --- routes/payment.routes.js ------------------------------------------------------------------
 const paymentRoutes = (() => {
   const router = Router();
 
   router.get('/packages', paymentController.catalogue);
-  router.post(
-    '/payments',
-    authMiddleware.requireAuth,
-    authMiddleware.requireVerified,
-    securityMiddleware.writeLimiter,
-    validateMiddleware.validate({ body: paymentValidation.createPayment }),
-    paymentController.create,
-  );
   router.get('/payments/mine', authMiddleware.requireAuth, paymentController.mine);
   router.get(
     '/payments/status/:invoiceNo',
@@ -9480,19 +8877,6 @@ const adminRoutes = (() => {
     id,
     validateMiddleware.validate({ body: adminValidation.updateUser }),
     adminUserController.update,
-  );
-  router.post(
-    '/users',
-    authMiddleware.requirePermission('users.manage'),
-    validateMiddleware.validate({ body: adminValidation.createUser }),
-    adminUserController.create,
-  );
-  router.post(
-    '/users/:id/reset-password',
-    authMiddleware.requirePermission('users.manage'),
-    id,
-    validateMiddleware.validate({ body: adminValidation.resetUserPassword }),
-    adminUserController.resetPassword,
   );
 
   // Payments, refunds, connection adjustments, packages
@@ -9732,8 +9116,8 @@ const appModule = (() => {
   /**
    * Builds the Express application (without listening), so tests can use it directly.
    *
-   * Request pipeline: security headers → CORS → logging → Better Auth (/api/auth) →
-   * JSON body → body sanitising → origin check → rate limit → load user → routes → errors.
+   * Request pipeline: security headers → CORS → logging → cookies → JSON body → body
+   * sanitising → origin check → rate limit → load user (session cookie) → routes → errors.
    */
   function createApp() {
     const app = express();
@@ -9751,14 +9135,6 @@ const appModule = (() => {
       );
 
     app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-
-    // Better Auth reads the raw request itself, so it is mounted before the JSON parser.
-    // It is created on first use, after the database connection is open.
-    app.all('/api/auth/*splat', securityMiddleware.originCheck, securityMiddleware.apiLimiter, (req, res) =>
-      toNodeHandler(authConfig.getAuth())(req, res),
-    );
-    // Payment gateways post form data from their own domain (see gateway.routes.js).
-    app.use('/api/gateway', securityMiddleware.apiLimiter, gatewayRoutes);
 
     app.use(cookieParser());
     app.use(express.json({ limit: '200kb' }));
@@ -10816,13 +10192,7 @@ export {
   supportTicketModel,
   userModel,
   models,
-  devOutboxIntegration,
-  emailIntegration,
-  smsIntegration,
-  sslcommerzIntegration,
-  messaging,
-  paymentGateways,
-  authConfig,
+  sessionAuth,
   accountService,
   analyticsService,
   attachmentService,
@@ -10875,7 +10245,6 @@ export {
   accountRoutes,
   biodataRoutes,
   contentRoutes,
-  gatewayRoutes,
   paymentRoutes,
   supportRoutes,
   adminRoutes,
