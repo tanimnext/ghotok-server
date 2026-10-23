@@ -195,6 +195,7 @@ const dbConfig = (() => {
   const CONNECT_OPTIONS = { autoIndex: true, serverSelectionTimeoutMS: 10000 };
   // Where the development MongoDB (below) keeps its data and log. Git ignores `.data/`.
   const DEV_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '.data');
+  const DEV_MONGO_MACOS_VERSION = '7.0.24';
 
   const isUnreachable = (err) =>
     err.name === 'MongooseServerSelectionError' || err.name === 'MongoServerSelectionError';
@@ -230,7 +231,11 @@ const dbConfig = (() => {
     logger.warn(
       'No MongoDB on 127.0.0.1:27017: starting a local development MongoDB (the first time it downloads about 100 MB).',
     );
-    const binary = await MongoBinary.getPath();
+    // MongoDB 8 needs macOS 14 or newer; 7.0 still runs on macOS 10.14+ and is plenty for
+    // development, so macOS always gets 7.0 (Linux and Windows get the package's default).
+    const binary = await MongoBinary.getPath(
+      process.platform === 'darwin' ? { version: DEV_MONGO_MACOS_VERSION } : {},
+    );
     const dbPath = path.join(DEV_DATA_DIR, 'mongo');
     fs.mkdirSync(dbPath, { recursive: true });
     const log = fs.openSync(path.join(DEV_DATA_DIR, 'mongo.log'), 'a');
@@ -240,10 +245,10 @@ const dbConfig = (() => {
     });
     const exited = new Promise((_, reject) => {
       child.once('error', reject);
-      child.once('exit', (code) =>
+      child.once('exit', (code, signal) =>
         reject(
           new Error(
-            `The development MongoDB stopped right away (exit code ${code}). See .data/mongo.log, ` +
+            `The development MongoDB stopped right away (${signal ? `signal ${signal}` : `exit code ${code}`}). See .data/mongo.log, ` +
               'or set MONGODB_URI in .env to a MongoDB Atlas connection string.',
           ),
         ),
