@@ -56,6 +56,16 @@ import { z } from 'zod';
 // ==============================================================================================
 
 // --- config/env.js -----------------------------------------------------------------------------
+// Load .env when the server is started directly (`node index.js`, `nodemon`), not only through
+// the npm scripts. Variables already set in the environment win. Tests never read .env.
+if (!process.env.VITEST) {
+  try {
+    process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), '.env'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
 const envConfig = (() => {
   const bool = (def) =>
     z
@@ -191,7 +201,24 @@ const dbConfig = (() => {
   mongoose.set('strictQuery', true);
 
   async function connectDb(uri = envConfig.env.MONGODB_URI) {
-    await mongoose.connect(uri, { autoIndex: true, serverSelectionTimeoutMS: 10000 });
+    try {
+      await mongoose.connect(uri, { autoIndex: true, serverSelectionTimeoutMS: 10000 });
+    } catch (err) {
+      // The usual first-run problem: no MongoDB at MONGODB_URI. Say how to fix it instead of
+      // printing the driver's topology dump.
+      if (err.name === 'MongooseServerSelectionError' || err.name === 'MongoServerSelectionError') {
+        const where = uri.replace(/\/\/[^@/]*@/, '//***@');
+        throw new Error(
+          [
+            `Cannot reach MongoDB at ${where}.`,
+            'Either start a local MongoDB (macOS: brew tap mongodb/brew && brew install mongodb-community && brew services start mongodb-community),',
+            'or create a free cluster on MongoDB Atlas and put its connection string in MONGODB_URI in .env.',
+          ].join('\n'),
+          { cause: err },
+        );
+      }
+      throw err;
+    }
     loggerConfig.logger.info({ db: mongoose.connection.name }, 'MongoDB connected');
     return mongoose.connection;
   }
@@ -11082,7 +11109,11 @@ const runDirectly =
   Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (runDirectly) {
   if (process.argv[2] === 'seed') seedScript.runSeedCommand();
-  else await startServer();
+  else
+    await startServer().catch((err) => {
+      console.error(`\n${err.message}\n`);
+      process.exit(1);
+    });
 }
 
 export {
