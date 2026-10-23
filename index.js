@@ -16,7 +16,7 @@
 //   2. Shared rules: options, locations, the biodata definition, permissions (copy kept in ghotok-client)
 //   3. Utilities
 //   4. Database models (Mongoose), collected in `models`
-//   5. Integrations: email, SMS, payment gateways (bKash, Nagad, SSLCommerz)
+//   5. Integrations: email, SMS, the SSLCommerz payment gateway
 //   6. Authentication (Better Auth)
 //   7. Services (business rules)
 //   8. Request validation schemas (Zod)
@@ -119,24 +119,13 @@ const envConfig = (() => {
     // The URL may contain {number} and {message} placeholders (e.g. BulkSMSBD, SSL Wireless GET APIs).
     SMS_API_URL: z.string().optional(),
 
-    // Payment gateways. Manual "Send Money + transaction ID" works for all three methods without any keys.
-    BKASH_ENABLED: bool(false),
-    BKASH_BASE_URL: z.string().default('https://tokenized.sandbox.bka.sh/v1.2.0-beta'),
-    BKASH_APP_KEY: z.string().optional(),
-    BKASH_APP_SECRET: z.string().optional(),
-    BKASH_USERNAME: z.string().optional(),
-    BKASH_PASSWORD: z.string().optional(),
-    NAGAD_ENABLED: bool(false),
-    NAGAD_BASE_URL: z.string().default('http://sandbox.mynagad.com:10080/remote-payment-gateway-1.0'),
-    NAGAD_MERCHANT_ID: z.string().optional(),
-    NAGAD_MERCHANT_NUMBER: z.string().optional(),
-    NAGAD_PUBLIC_KEY: z.string().optional(),
-    NAGAD_MERCHANT_PRIVATE_KEY: z.string().optional(),
     // Sign in with Google (Better Auth): create OAuth credentials with the redirect URI
     // <BETTER_AUTH_URL>/api/auth/callback/google. Leave empty to turn it off.
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
 
+    // Payments: SSLCommerz hosted checkout is the only way to pay (cards, bKash, Nagad, Rocket
+    // and internet banking on one page). Without these settings nobody can buy connections.
     SSLCOMMERZ_ENABLED: bool(false),
     SSLCOMMERZ_BASE_URL: z.string().default('https://sandbox.sslcommerz.com'),
     SSLCOMMERZ_STORE_ID: z.string().optional(),
@@ -423,22 +412,32 @@ const sharedOptions = (() => {
     { value: 'other', en: 'Other', bn: 'অন্যান্য' },
   ];
 
+  // Every payment goes through SSLCommerz (cards, bKash, Nagad, Rocket, internet banking).
   const PAYMENT_METHODS = [
+    {
+      value: 'sslcommerz',
+      en: 'SSLCommerz (card, bKash, Nagad, Rocket, bank)',
+      bn: 'SSLCommerz (কার্ড, বিকাশ, নগদ, রকেট, ব্যাংক)',
+    },
+  ];
+
+  // Methods of payments made before SSLCommerz became the only option. Stored payments may
+  // still carry them, so the model accepts and the clients can label them; nothing new uses them.
+  const LEGACY_PAYMENT_METHODS = [
     { value: 'bkash', en: 'bKash', bn: 'বিকাশ' },
     { value: 'nagad', en: 'Nagad', bn: 'নগদ' },
     { value: 'rocket', en: 'Rocket', bn: 'রকেট' },
-    // Online checkout only: cards, mobile banking and internet banking through SSLCommerz.
-    { value: 'sslcommerz', en: 'Card / mobile banking', bn: 'কার্ড / মোবাইল ব্যাংকিং', gatewayOnly: true },
   ];
 
   const PAYMENT_STATUS = [
     { value: 'initiated', en: 'Awaiting payment', bn: 'পেমেন্টের অপেক্ষায়' },
-    { value: 'pending', en: 'Pending review', bn: 'যাচাইয়ের অপেক্ষায়' },
-    { value: 'verified', en: 'Verified', bn: 'যাচাইকৃত' },
-    { value: 'rejected', en: 'Rejected', bn: 'বাতিল' },
+    { value: 'verified', en: 'Paid', bn: 'পরিশোধিত' },
     { value: 'failed', en: 'Failed', bn: 'ব্যর্থ' },
     { value: 'cancelled', en: 'Cancelled', bn: 'বাতিলকৃত' },
     { value: 'refunded', en: 'Refunded', bn: 'রিফান্ডকৃত' },
+    // Older manual payments only.
+    { value: 'pending', en: 'Pending review', bn: 'যাচাইয়ের অপেক্ষায়' },
+    { value: 'rejected', en: 'Rejected', bn: 'বাতিল' },
   ];
 
   const REFUND_STATUS = [
@@ -575,6 +574,7 @@ const sharedOptions = (() => {
     HIDE_REASONS,
     DELETE_REASONS,
     PAYMENT_METHODS,
+    LEGACY_PAYMENT_METHODS,
     PAYMENT_STATUS,
     REFUND_STATUS,
     REFUND_RESOLUTIONS,
@@ -2445,6 +2445,7 @@ const shared = (() => {
     HIDE_REASONS: sharedOptions.HIDE_REASONS,
     DELETE_REASONS: sharedOptions.DELETE_REASONS,
     PAYMENT_METHODS: sharedOptions.PAYMENT_METHODS,
+    LEGACY_PAYMENT_METHODS: sharedOptions.LEGACY_PAYMENT_METHODS,
     PAYMENT_STATUS: sharedOptions.PAYMENT_STATUS,
     REFUND_STATUS: sharedOptions.REFUND_STATUS,
     REFUND_RESOLUTIONS: sharedOptions.REFUND_RESOLUTIONS,
@@ -3134,14 +3135,13 @@ const paymentModel = (() => {
   const { Schema } = mongoose;
 
   /**
-   * A purchase of a connection package.
-   *
-   * - mode "manual": the customer sends money and submits a transaction ID; staff verify it.
-   *   Status: pending → verified | rejected (→ refunded)
-   * - mode "gateway": online checkout through bKash or Nagad.
-   *   Status: initiated → verified | failed | cancelled (→ refunded)
+   * A purchase of a connection package through SSLCommerz.
+   * Status: initiated → verified | failed | cancelled (→ refunded)
    *
    * `creditedAt` is set exactly once, when the connections are added to the balance.
+   * Payments from before SSLCommerz became the only method may have mode "manual", a
+   * bKash/Nagad/Rocket method, a sender number and status pending/rejected; they are kept
+   * readable but nothing creates them any more.
    */
   const paymentSchema = new Schema(
     {
@@ -3151,14 +3151,19 @@ const paymentModel = (() => {
       packageName: { en: String, bn: String }, // snapshot, so history survives package edits
       connections: { type: Number, required: true, min: 1 },
       amount: { type: Number, required: true, min: 1 }, // BDT
-      method: { type: String, enum: shared.optionValues(shared.PAYMENT_METHODS), required: true },
-      mode: { type: String, enum: ['manual', 'gateway'], required: true },
-      senderNumber: String,
-      trxId: { type: String, trim: true },
+      method: {
+        type: String,
+        enum: shared.optionValues([...shared.PAYMENT_METHODS, ...shared.LEGACY_PAYMENT_METHODS]),
+        default: 'sslcommerz',
+        required: true,
+      },
+      mode: { type: String, enum: ['manual', 'gateway'], default: 'gateway' },
+      senderNumber: String, // older manual payments only
+      trxId: { type: String, trim: true }, // the bank transaction id SSLCommerz reports
       status: {
         type: String,
         enum: shared.optionValues(shared.PAYMENT_STATUS),
-        default: 'pending',
+        default: 'initiated',
         index: true,
       },
       gateway: {
@@ -3592,269 +3597,6 @@ const smsIntegration = (() => {
   return { sendSms };
 })();
 
-// --- integrations/payments/bkash.js ------------------------------------------------------------
-const bkashIntegration = (() => {
-  // bKash Tokenized Checkout (https://developer.bka.sh). Flow:
-  // grant token → create payment → customer pays on bkashURL → bKash redirects to
-  // our callback with ?paymentID&status → execute payment → credit connections.
-
-  let token = { idToken: null, expiresAt: 0 };
-
-  async function post(path, body, headers = {}) {
-    const res = await fetch(`${envConfig.env.BKASH_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`bKash ${path} failed with ${res.status}: ${JSON.stringify(json)}`);
-    return json;
-  }
-
-  async function idToken() {
-    if (token.idToken && Date.now() < token.expiresAt) return token.idToken;
-    const json = await post(
-      '/tokenized/checkout/token/grant',
-      { app_key: envConfig.env.BKASH_APP_KEY, app_secret: envConfig.env.BKASH_APP_SECRET },
-      { username: envConfig.env.BKASH_USERNAME, password: envConfig.env.BKASH_PASSWORD },
-    );
-    if (!json.id_token)
-      throw new Error(`bKash token grant failed: ${json.statusMessage ?? JSON.stringify(json)}`);
-    token = {
-      idToken: json.id_token,
-      expiresAt: Date.now() + (Number(json.expires_in ?? 3600) - 120) * 1000,
-    };
-    return token.idToken;
-  }
-
-  async function authed(path, body) {
-    return post(path, body, { Authorization: await idToken(), 'X-APP-Key': envConfig.env.BKASH_APP_KEY });
-  }
-
-  const bkash = {
-    name: 'bkash',
-    get enabled() {
-      return (
-        envConfig.env.BKASH_ENABLED &&
-        !!(
-          envConfig.env.BKASH_APP_KEY &&
-          envConfig.env.BKASH_APP_SECRET &&
-          envConfig.env.BKASH_USERNAME &&
-          envConfig.env.BKASH_PASSWORD
-        )
-      );
-    },
-
-    async startCheckout(payment, { callbackURL }) {
-      const json = await authed('/tokenized/checkout/create', {
-        mode: '0011',
-        payerReference: String(payment.user).slice(-12),
-        callbackURL,
-        amount: payment.amount.toFixed(2),
-        currency: 'BDT',
-        intent: 'sale',
-        merchantInvoiceNumber: payment.invoiceNo,
-      });
-      if (json.statusCode !== '0000' || !json.bkashURL)
-        throw new Error(`bKash create failed: ${json.statusMessage ?? JSON.stringify(json)}`);
-      return { paymentId: json.paymentID, redirectURL: json.bkashURL, raw: json };
-    },
-
-    /** Handles the redirect back from bKash. */
-    async completeCheckout(query) {
-      const paymentId = String(query.paymentID ?? '');
-      if (!paymentId) return { paymentId, success: false, raw: query };
-      if (query.status !== 'success')
-        return { paymentId, success: false, cancelled: query.status === 'cancel', raw: query };
-      let json = await authed('/tokenized/checkout/execute', { paymentID: paymentId }).catch((err) => ({
-        error: err.message,
-      }));
-      // If execute timed out or was already called, the status query is authoritative.
-      if (json.transactionStatus !== 'Completed') {
-        json = await authed('/tokenized/checkout/payment/status', { paymentID: paymentId }).catch((err) => ({
-          error: err.message,
-        }));
-      }
-      return {
-        paymentId,
-        success: json.transactionStatus === 'Completed',
-        trxId: json.trxID,
-        amount: json.amount ? Number(json.amount) : undefined,
-        raw: json,
-      };
-    },
-  };
-
-  return { bkash };
-})();
-
-// --- integrations/payments/nagad.js ------------------------------------------------------------
-const nagadIntegration = (() => {
-  // Nagad Payment Gateway (merchant checkout API v-0.2.0). Request payloads are
-  // encrypted with Nagad's public key and signed with the merchant's private key;
-  // responses are encrypted with the merchant's public key.
-
-  const pem = (raw, label) => {
-    const s = String(raw ?? '')
-      .trim()
-      .replace(/\\n/g, '\n');
-    if (s.includes('BEGIN')) return s;
-    const body =
-      s
-        .replace(/\s+/g, '')
-        .match(/.{1,64}/g)
-        ?.join('\n') ?? '';
-    return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`;
-  };
-
-  const nagadPublicKey = () => pem(envConfig.env.NAGAD_PUBLIC_KEY, 'PUBLIC KEY');
-  const merchantPrivateKey = () => pem(envConfig.env.NAGAD_MERCHANT_PRIVATE_KEY, 'PRIVATE KEY');
-
-  function encrypt(data) {
-    return crypto
-      .publicEncrypt(
-        { key: nagadPublicKey(), padding: crypto.constants.RSA_PKCS1_PADDING },
-        Buffer.from(data),
-      )
-      .toString('base64');
-  }
-
-  function sign(data) {
-    return crypto.createSign('SHA256').update(data).sign(merchantPrivateKey(), 'base64');
-  }
-
-  // Node.js refuses RSA_PKCS1_PADDING in privateDecrypt (CVE-2023-46809), so we
-  // decrypt without padding and remove the PKCS#1 v1.5 type-2 padding ourselves.
-  function decrypt(b64) {
-    const raw = crypto.privateDecrypt(
-      { key: merchantPrivateKey(), padding: crypto.constants.RSA_NO_PADDING },
-      Buffer.from(b64, 'base64'),
-    );
-    if (raw[0] !== 0x00 || raw[1] !== 0x02) throw new Error('Nagad: unexpected padding');
-    const sep = raw.indexOf(0x00, 2);
-    if (sep < 10) throw new Error('Nagad: unexpected padding');
-    return raw.subarray(sep + 1).toString('utf8');
-  }
-
-  function dhakaTimestamp() {
-    const parts = Object.fromEntries(
-      new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Asia/Dhaka',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      })
-        .formatToParts(new Date())
-        .map((p) => [p.type, p.value]),
-    );
-    return `${parts.year}${parts.month}${parts.day}${parts.hour === '24' ? '00' : parts.hour}${parts.minute}${parts.second}`;
-  }
-
-  async function request(path, { method = 'POST', body, ip } = {}) {
-    const res = await fetch(`${envConfig.env.NAGAD_BASE_URL}${path}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-KM-Api-Version': 'v-0.2.0',
-        'X-KM-IP-V4': ip ?? '127.0.0.1',
-        'X-KM-Client-Type': 'PC_WEB',
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(30000),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`Nagad ${path} failed with ${res.status}: ${JSON.stringify(json)}`);
-    return json;
-  }
-
-  const orderIdOf = (payment) => payment.invoiceNo.replace(/[^A-Za-z0-9]/g, '').slice(0, 20);
-
-  const nagad = {
-    name: 'nagad',
-    get enabled() {
-      return (
-        envConfig.env.NAGAD_ENABLED &&
-        !!(
-          envConfig.env.NAGAD_MERCHANT_ID &&
-          envConfig.env.NAGAD_MERCHANT_NUMBER &&
-          envConfig.env.NAGAD_PUBLIC_KEY &&
-          envConfig.env.NAGAD_MERCHANT_PRIVATE_KEY
-        )
-      );
-    },
-
-    async startCheckout(payment, { callbackURL, ip }) {
-      const merchantId = envConfig.env.NAGAD_MERCHANT_ID;
-      const orderId = orderIdOf(payment);
-      const dateTime = dhakaTimestamp();
-      const init = {
-        merchantId,
-        datetime: dateTime,
-        orderId,
-        challenge: crypto.randomBytes(20).toString('hex'),
-      };
-      const initRes = await request(`/api/dfs/check-out/initialize/${merchantId}/${orderId}`, {
-        ip,
-        body: {
-          accountNumber: envConfig.env.NAGAD_MERCHANT_NUMBER,
-          dateTime,
-          sensitiveData: encrypt(JSON.stringify(init)),
-          signature: sign(JSON.stringify(init)),
-        },
-      });
-      if (!initRes.sensitiveData) throw new Error(`Nagad initialize failed: ${JSON.stringify(initRes)}`);
-      const { paymentReferenceId, challenge } = JSON.parse(decrypt(initRes.sensitiveData));
-      const order = {
-        merchantId,
-        orderId,
-        currencyCode: '050',
-        amount: payment.amount.toFixed(2),
-        challenge,
-      };
-      const completeRes = await request(`/api/dfs/check-out/complete/${paymentReferenceId}`, {
-        ip,
-        body: {
-          sensitiveData: encrypt(JSON.stringify(order)),
-          signature: sign(JSON.stringify(order)),
-          merchantCallbackURL: callbackURL,
-          additionalMerchantInfo: { invoiceNo: payment.invoiceNo },
-        },
-      });
-      if (completeRes.status !== 'Success' || !completeRes.callBackUrl)
-        throw new Error(`Nagad complete failed: ${JSON.stringify(completeRes)}`);
-      return {
-        paymentId: paymentReferenceId,
-        redirectURL: completeRes.callBackUrl,
-        raw: { initialize: initRes, complete: completeRes },
-      };
-    },
-
-    /** Handles the redirect back from Nagad (?payment_ref_id&status). The verify API is authoritative. */
-    async completeCheckout(query) {
-      const paymentId = String(query.payment_ref_id ?? '');
-      if (!paymentId) return { paymentId, success: false, raw: query };
-      const json = await request(`/api/dfs/verify/payment/${encodeURIComponent(paymentId)}`, {
-        method: 'GET',
-      }).catch((err) => ({ error: err.message }));
-      return {
-        paymentId,
-        success: json.status === 'Success',
-        cancelled: query.status === 'Aborted' || json.status === 'Aborted',
-        trxId: json.issuerPaymentRefNo,
-        amount: json.amount ? Number(json.amount) : undefined,
-        raw: json,
-      };
-    },
-  };
-
-  return { nagad };
-})();
-
 // --- integrations/payments/sslcommerz.js -------------------------------------------------------
 const sslcommerzIntegration = (() => {
   // SSLCommerz hosted checkout (https://developer.sslcommerz.com): cards, mobile
@@ -3965,22 +3707,18 @@ const messaging = (() => {
 
 // --- integrations/payments/index.js ------------------------------------------------------------
 const paymentGateways = (() => {
-  // Automatic checkout providers. Rocket (DBBL) has no public merchant API, so it —
-  // like bKash and Nagad when their keys are not configured — uses manual
-  // "Send Money + transaction ID" verification by an admin. SSLCommerz is
-  // gateway-only (cards and mobile banking on one hosted page).
-  const gateways = {
-    bkash: bkashIntegration.bkash,
-    nagad: nagadIntegration.nagad,
-    sslcommerz: sslcommerzIntegration.sslcommerz,
-  };
+  // SSLCommerz is the only payment gateway; every payment is an SSLCommerz checkout.
+  const gateways = { sslcommerz: sslcommerzIntegration.sslcommerz };
 
+  /** The gateway for a method, or null when it is unknown or not configured. */
   function gatewayFor(method) {
     const g = gateways[method];
     return g?.enabled ? g : null;
   }
 
-  return { gateways, gatewayFor };
+  const checkoutEnabled = () => gateways.sslcommerz.enabled;
+
+  return { gateways, gatewayFor, checkoutEnabled };
 })();
 
 // ==============================================================================================
@@ -4245,19 +3983,19 @@ const analyticsService = (() => {
     };
     if (shared.can(actor.role, 'payments.manage')) {
       const since30 = new Date(Date.now() - 30 * 864e5);
-      const [pendingPayments, pendingRefunds, revenue, payments] = await Promise.all([
-        models.Payment.countDocuments({ status: 'pending' }),
+      const [pendingRefunds, revenue, payments] = await Promise.all([
         models.RefundRequest.countDocuments({ status: 'pending' }),
         models.Payment.aggregate([
           { $match: { status: 'verified', creditedAt: { $gte: since30 } } },
           { $group: { _id: null, total: { $sum: '$amount' } } },
         ]),
-        models.Payment.find({ status: 'pending' })
-          .sort({ createdAt: 1 })
+        // The latest successful payments (SSLCommerz credits them by itself; nothing waits for staff).
+        models.Payment.find({ status: 'verified' })
+          .sort({ creditedAt: -1 })
           .limit(6)
           .populate('user', 'name email phoneNumber role status'),
       ]);
-      Object.assign(overview.kpis, { pendingPayments, pendingRefunds, revenue30: revenue[0]?.total ?? 0 });
+      Object.assign(overview.kpis, { pendingRefunds, revenue30: revenue[0]?.total ?? 0 });
       overview.payments = payments.map((p) => ({
         ...paymentSerializer.toPaymentDTO(p),
         user: userSerializer.toUserSummary(p.user),
@@ -5273,8 +5011,8 @@ const connectionService = (() => {
   }
 
   /**
-   * Marks a payment verified and credits its connections exactly once — safe when
-   * two admins, or an admin and a gateway callback, act at the same moment.
+   * Marks a payment verified and credits its connections exactly once — safe when the
+   * SSLCommerz return and its IPN arrive at the same moment.
    * @returns {Promise<object | null>} the payment, or null if it was already processed
    */
   async function creditPayment(paymentId, { actor, trxId, gatewayResponse } = {}) {
@@ -5283,7 +5021,7 @@ const connectionService = (() => {
     if (trxId) set.trxId = trxId;
     if (gatewayResponse) set['gateway.response'] = gatewayResponse;
     const payment = await models.Payment.findOneAndUpdate(
-      { _id: paymentId, status: { $in: ['initiated', 'pending'] }, creditedAt: null },
+      { _id: paymentId, status: 'initiated', creditedAt: null },
       { $set: set },
       { new: true },
     );
@@ -5296,10 +5034,10 @@ const connectionService = (() => {
         reason: payment.invoiceNo,
       });
     } catch (err) {
-      // Put the payment back so it can be verified again.
+      // Put the payment back so the gateway's next notice can credit it.
       await models.Payment.updateOne(
         { _id: payment._id },
-        { $set: { status: 'pending' }, $unset: { creditedAt: 1 } },
+        { $set: { status: 'initiated' }, $unset: { creditedAt: 1 } },
       );
       loggerConfig.logger.error({ err, payment: payment.invoiceNo }, 'Crediting a payment failed');
       throw err;
@@ -5479,10 +5217,9 @@ const contentService = (() => {
     return {
       site,
       payments: {
-        verificationHours: payments.verificationHours,
         approvalGift: payments.approvalGift,
         approvedDiscountPercent: payments.approvedDiscountPercent,
-        gateways: Object.keys(paymentGateways.gateways).filter((m) => paymentGateways.gateways[m].enabled),
+        checkoutEnabled: paymentGateways.checkoutEnabled(),
       },
       // Sign-in options the client should offer (Better Auth handles Google itself).
       auth: { google: !!(envConfig.env.GOOGLE_CLIENT_ID && envConfig.env.GOOGLE_CLIENT_SECRET) },
@@ -5859,7 +5596,6 @@ const notificationService = (() => {
     'biodata_approved',
     'biodata_rejected',
     'payment_verified',
-    'payment_rejected',
     'refund_approved',
     'refund_rejected',
     'ticket_replied',
@@ -5985,33 +5721,9 @@ const packageService = (() => {
 
 // --- services/payment.service.js ---------------------------------------------------------------
 const paymentService = (() => {
-  // Buying connection packages with bKash, Nagad or Rocket.
-  // Manual mode: the customer sends money and submits the transaction ID; staff verify it.
-  // Gateway mode: online checkout (bKash Tokenized Checkout / Nagad), credited on the callback.
-
-  const MAX_PENDING_MANUAL = 3;
-
-  /** Payment methods with their manual "Send Money" numbers and whether online checkout is available. */
-  async function paymentMethods() {
-    const settings = await settingsService.getSetting('payments');
-    return {
-      verificationHours: settings.verificationHours,
-      methods: shared.PAYMENT_METHODS.map((m) => {
-        const gateway = !!paymentGateways.gateways[m.value]?.enabled;
-        return {
-          value: m.value,
-          en: m.en,
-          bn: m.bn,
-          // A gateway-only method (SSLCommerz) is offered only when its gateway is configured.
-          enabled: settings[m.value]?.enabled !== false && (!m.gatewayOnly || gateway),
-          gatewayOnly: !!m.gatewayOnly,
-          manualNumber: m.gatewayOnly ? null : settings[m.value]?.manualNumber || null,
-          accountType: settings[m.value]?.accountType ?? 'personal',
-          gateway,
-        };
-      }),
-    };
-  }
+  // Buying connection packages. SSLCommerz is the only way to pay: the member picks a package,
+  // pays on SSLCommerz's page (card, bKash, Nagad, Rocket or internet banking), and the payment
+  // is credited when SSLCommerz reports it and its validation API confirms it.
 
   /** The member's package discount in percent: members whose biodata is live may get one (site setting). */
   async function discountFor(user) {
@@ -6024,7 +5736,7 @@ const paymentService = (() => {
 
   const discounted = (price, percent) => Math.round(price * (1 - percent / 100));
 
-  /** Active packages and payment methods; for a member with a discount, the price they pay. */
+  /** Active packages (with the member's discounted price) and whether checkout is available. */
   async function catalogue(user) {
     const [packages, discount] = await Promise.all([
       models.Package.find({ isActive: true }).sort({ sortOrder: 1, price: 1 }),
@@ -6035,7 +5747,7 @@ const paymentService = (() => {
         ...paymentSerializer.toPackageDTO(p),
         ...(discount ? { discountPercent: discount, finalPrice: discounted(p.price, discount) } : {}),
       })),
-      ...(await paymentMethods()),
+      checkout: { enabled: paymentGateways.checkoutEnabled() },
     };
   }
 
@@ -6046,47 +5758,36 @@ const paymentService = (() => {
   }
 
   /**
-   * Starts a purchase.
-   * @returns {Promise<{ payment: object, redirectURL?: string }>} redirectURL for gateway checkout
+   * Starts an SSLCommerz checkout for a package.
+   * @returns {Promise<{ payment: object, redirectURL: string }>} redirectURL is SSLCommerz's payment page
    */
-  async function createPayment(user, { packageId, method, mode, senderNumber, trxId }, { ip } = {}) {
+  async function createPayment(user, { packageId }, { ip } = {}) {
+    const gateway = paymentGateways.gatewayFor('sslcommerz');
+    if (!gateway) {
+      throw new apiErrorUtils.ApiError(
+        503,
+        'PAYMENTS_UNAVAILABLE',
+        'Online payment is not available right now. Please try again later or contact support.',
+      );
+    }
     const pkg = await models.Package.findOne({ _id: packageId, isActive: true });
     if (!pkg) throw apiErrorUtils.notFound('Package');
-    const { methods } = await paymentMethods();
-    const chosen = methods.find((m) => m.value === method);
-    if (!chosen?.enabled || (chosen.gatewayOnly && mode !== 'gateway')) {
-      throw apiErrorUtils.badRequest('METHOD_DISABLED', 'This payment method is not available right now.');
-    }
     const discount = await discountFor(user);
-    const base = {
+    const payment = await models.Payment.create({
       user: user._id,
       package: pkg._id,
       packageName: pkg.name,
       connections: pkg.connections,
       amount: discounted(pkg.price, discount),
-      method,
+      method: 'sslcommerz',
+      mode: 'gateway',
+      status: 'initiated',
       invoiceNo: await nextInvoiceNo(),
-    };
-    return mode === 'gateway'
-      ? startGatewayCheckout(base, { ip, user })
-      : submitManualPayment(user, base, { senderNumber, trxId });
-  }
-
-  async function startGatewayCheckout(base, { ip, user }) {
-    const gateway = paymentGateways.gatewayFor(base.method);
-    if (!gateway) {
-      throw apiErrorUtils.badRequest(
-        'GATEWAY_UNAVAILABLE',
-        'Online checkout is not available for this method. Please use Send Money.',
-      );
-    }
-    const payment = await models.Payment.create({ ...base, mode: 'gateway', status: 'initiated' });
+    });
     try {
       const started = await gateway.startCheckout(payment, {
-        callbackURL: `${envConfig.env.API_PUBLIC_URL}/api/payments/${base.method}/callback`,
-        // Gateways that post the result back (SSLCommerz) use these instead.
-        returnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/${base.method}/return`,
-        ipnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/${base.method}/ipn`,
+        returnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/sslcommerz/return`,
+        ipnURL: `${envConfig.env.API_PUBLIC_URL}/api/gateway/sslcommerz/ipn`,
         customer: { name: user.name, email: userSerializer.contactEmail(user), phone: user.phoneNumber },
         ip,
       });
@@ -6094,62 +5795,31 @@ const paymentService = (() => {
       await payment.save();
       return { payment: paymentSerializer.toPaymentDTO(payment), redirectURL: started.redirectURL };
     } catch (err) {
-      loggerConfig.logger.error({ err, invoice: payment.invoiceNo }, 'Gateway checkout failed to start');
+      loggerConfig.logger.error({ err, invoice: payment.invoiceNo }, 'Checkout failed to start');
       payment.status = 'failed';
       await payment.save();
       throw new apiErrorUtils.ApiError(
         502,
         'GATEWAY_ERROR',
-        'The payment gateway is not responding. Please try again or use Send Money.',
+        'The payment gateway is not responding. Please try again in a few minutes.',
       );
     }
-  }
-
-  async function submitManualPayment(user, base, { senderNumber, trxId }) {
-    if (
-      await models.Payment.exists({
-        method: base.method,
-        trxId,
-        status: { $in: ['pending', 'verified', 'refunded'] },
-      })
-    ) {
-      throw apiErrorUtils.conflict('DUPLICATE_TRX', 'This transaction ID has already been submitted.');
-    }
-    const pending = await models.Payment.countDocuments({
-      user: user._id,
-      mode: 'manual',
-      status: 'pending',
-    });
-    if (pending >= MAX_PENDING_MANUAL) {
-      throw new apiErrorUtils.ApiError(
-        429,
-        'TOO_MANY_PENDING',
-        `You already have ${MAX_PENDING_MANUAL} payments waiting for verification.`,
-      );
-    }
-    const payment = await models.Payment.create({
-      ...base,
-      mode: 'manual',
-      status: 'pending',
-      senderNumber,
-      trxId,
-    });
-    return { payment: paymentSerializer.toPaymentDTO(payment) };
   }
 
   /**
-   * Handles the customer's return from bKash/Nagad. The gateway's own status API is
-   * authoritative; the amount must match before connections are credited.
+   * Handles SSLCommerz's result (the customer's return or the IPN). The gateway's validation
+   * API is authoritative, and the paid amount must match before connections are credited.
+   * Safe to call more than once for the same payment.
    * @returns {Promise<{ status: 'success' | 'failed' | 'cancelled', invoiceNo?: string }>}
    */
-  async function completeGatewayCheckout(method, query) {
+  async function completeGatewayCheckout(method, body) {
     const gateway = paymentGateways.gatewayFor(method);
     if (!gateway) return { status: 'failed' };
     let result;
     try {
-      result = await gateway.completeCheckout(query);
+      result = await gateway.completeCheckout(body);
     } catch (err) {
-      loggerConfig.logger.error({ err, method }, 'Gateway callback failed');
+      loggerConfig.logger.error({ err, method }, 'Gateway result could not be checked');
       return { status: 'failed' };
     }
     const payment = result.paymentId
@@ -6165,6 +5835,12 @@ const paymentService = (() => {
         gatewayResponse: result.raw,
       });
       return { status: 'success', invoiceNo: payment.invoiceNo };
+    }
+    if (result.success && !amountMatches) {
+      loggerConfig.logger.warn(
+        { invoice: payment.invoiceNo, paid: result.amount, expected: payment.amount },
+        'Paid amount does not match the invoice; not credited',
+      );
     }
     const status = result.cancelled ? 'cancelled' : 'failed';
     await models.Payment.updateOne(
@@ -6210,65 +5886,27 @@ const paymentService = (() => {
 
   // ----- Staff -------------------------------------------------------------------
 
-  function listPayments({ status, method, mode, q }, query) {
+  /** Every payment, newest first (read-only: SSLCommerz decides whether a payment succeeded). */
+  function listPayments({ status, q }, query) {
     const filter = { status: status ?? { $ne: 'initiated' } };
-    if (method) filter.method = method;
-    if (mode) filter.mode = mode;
     if (q) {
       const re = new RegExp(stringsUtils.escapeRegex(q), 'i');
-      filter.$or = [{ invoiceNo: re }, { trxId: re }, { senderNumber: re }];
+      filter.$or = [{ invoiceNo: re }, { trxId: re }];
     }
     return paginationUtils.paginate(
       models.Payment.find(filter)
-        .sort({ createdAt: status === 'pending' ? 1 : -1 })
-        .populate('user', 'name email phoneNumber role status')
-        .populate('reviewedBy', 'name'),
+        .sort({ createdAt: -1 })
+        .populate('user', 'name email phoneNumber role status'),
       models.Payment.countDocuments(filter),
       paginationUtils.pageParams(query, { defaultLimit: 20 }),
       (p) => ({
         ...paymentSerializer.toPaymentDTO(p),
         user: userSerializer.toUserSummary(p.user),
-        reviewedBy: p.reviewedBy?.name ?? null,
-        reviewedAt: p.reviewedAt ?? null,
       }),
     );
   }
 
-  async function verifyPayment(id, ctx) {
-    const payment = await connectionService.creditPayment(id, { actor: ctx.actor._id });
-    if (!payment) throw apiErrorUtils.conflict('NOT_PENDING', 'This payment has already been processed.');
-    await auditService.recordAudit(ctx, 'payment.verify', {
-      targetType: 'payment',
-      targetId: payment._id,
-      summary: `Verified ${payment.invoiceNo} (${payment.method} ${payment.trxId ?? ''}) +${payment.connections}`,
-    });
-    return paymentSerializer.toPaymentDTO(payment);
-  }
-
-  async function rejectPayment(id, reason, ctx) {
-    const payment = await models.Payment.findOneAndUpdate(
-      { _id: id, status: 'pending' },
-      { status: 'rejected', rejectReason: reason, reviewedBy: ctx.actor._id, reviewedAt: new Date() },
-      { new: true },
-    );
-    if (!payment) throw apiErrorUtils.conflict('NOT_PENDING', 'This payment has already been processed.');
-    await notificationService.notify(
-      payment.user,
-      'payment_rejected',
-      { invoiceNo: payment.invoiceNo, reason },
-      '/dashboard/connections',
-    );
-    await auditService.recordAudit(ctx, 'payment.reject', {
-      targetType: 'payment',
-      targetId: payment._id,
-      summary: `Rejected ${payment.invoiceNo}`,
-      meta: { reason },
-    });
-    return paymentSerializer.toPaymentDTO(payment);
-  }
-
   return {
-    paymentMethods,
     discountFor,
     catalogue,
     createPayment,
@@ -6276,8 +5914,6 @@ const paymentService = (() => {
     paymentStatus,
     myPayments,
     listPayments,
-    verifyPayment,
-    rejectPayment,
   };
 })();
 
@@ -6405,8 +6041,9 @@ const proposalService = (() => {
 const refundService = (() => {
   // Refunds have two resolutions:
   // - connection_credit: connections are added (e.g. a payment that could not be verified)
-  // - money_back: money is returned outside the system and the purchased, still unused
-  //   connections are taken back; the payment becomes "refunded".
+  // - money_back: staff refund the payment from the SSLCommerz merchant panel (refundTrxId is
+  //   its refund reference) and the purchased, still unused connections are taken back; the
+  //   payment becomes "refunded".
 
   const REFUNDABLE = ['verified', 'rejected', 'pending'];
 
@@ -6917,14 +6554,10 @@ const settingsService = (() => {
       tutorials: { createBiodata: '', buyConnections: '', viewContact: '' },
     },
     payments: {
-      verificationHours: 6,
       // Connections given once, when a member's biodata is approved for the first time.
       approvalGift: 1,
       // Discount (%) on packages for members whose biodata is approved. 0 turns it off.
       approvedDiscountPercent: 0,
-      bkash: { enabled: true, manualNumber: '', accountType: 'personal' },
-      nagad: { enabled: true, manualNumber: '', accountType: 'personal' },
-      rocket: { enabled: true, manualNumber: '', accountType: 'personal' },
     },
     stats: { marriagesOffset: 0, show: true },
   };
@@ -7905,37 +7538,8 @@ const biodataValidation = (() => {
 
 // --- validations/payment.validation.js ---------------------------------------------------------
 const paymentValidation = (() => {
-  const method = z.enum(shared.optionValues(shared.PAYMENT_METHODS));
-
-  /** Manual payments need the sender number and transaction ID; gateway checkouts do not. */
-  const createPayment = z
-    .object({
-      packageId: commonValidation.objectId,
-      method,
-      mode: z.enum(['manual', 'gateway']).default('manual'),
-      senderNumber: z.string().trim().max(20).optional(),
-      trxId: z.string().trim().max(40).optional(),
-    })
-    .transform((v, ctx) => {
-      if (v.mode === 'gateway') return { packageId: v.packageId, method: v.method, mode: v.mode };
-      const senderNumber = shared.normalizePhone(v.senderNumber);
-      const trxId = String(v.trxId ?? '').toUpperCase();
-      if (!shared.isValidPhone(senderNumber)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['senderNumber'],
-          message: 'Enter the mobile number you paid from.',
-        });
-      }
-      if (!/^[A-Z0-9]{6,20}$/.test(trxId)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['trxId'],
-          message: 'Enter the transaction ID from the confirmation SMS.',
-        });
-      }
-      return { ...v, senderNumber, trxId };
-    });
+  /** Buying a package: the only choice is which one; SSLCommerz handles the rest. */
+  const createPayment = z.object({ packageId: commonValidation.objectId });
 
   const requestRefund = z.object({
     paymentId: commonValidation.objectId,
@@ -7946,15 +7550,9 @@ const paymentValidation = (() => {
 
   const paymentsQuery = z.object({
     status: z.enum(shared.optionValues(shared.PAYMENT_STATUS)).optional().catch(undefined),
-    method: method.optional().catch(undefined),
-    mode: z.enum(['manual', 'gateway']).optional().catch(undefined),
     q: z.string().trim().max(60).optional(),
     page: z.string().optional(),
     limit: z.string().optional(),
-  });
-
-  const rejectPayment = z.object({
-    reason: z.string().trim().min(3, 'Add a reason for the user.').max(500),
   });
 
   const refundsQuery = z.object({
@@ -8018,7 +7616,6 @@ const paymentValidation = (() => {
     createPayment,
     requestRefund,
     paymentsQuery,
-    rejectPayment,
     refundsQuery,
     approveRefund,
     rejectRefund,
@@ -8258,9 +7855,7 @@ const paymentSerializer = (() => {
       packageName: p.packageName,
       connections: p.connections,
       amount: p.amount,
-      method: p.method,
-      mode: p.mode,
-      senderNumber: p.senderNumber ?? null,
+      method: p.method ?? 'sslcommerz',
       trxId: p.trxId ?? null,
       status: p.status,
       rejectReason: p.rejectReason ?? null,
@@ -8702,22 +8297,6 @@ const adminBillingController = (() => {
     res.json(await paymentService.listPayments(req.query, req.query));
   }
 
-  async function verifyPayment(req, res) {
-    res.json({
-      payment: await paymentService.verifyPayment(req.params.id, requestUtils.requestContext(req)),
-    });
-  }
-
-  async function rejectPayment(req, res) {
-    res.json({
-      payment: await paymentService.rejectPayment(
-        req.params.id,
-        req.body.reason,
-        requestUtils.requestContext(req),
-      ),
-    });
-  }
-
   async function refunds(req, res) {
     res.json(await refundService.listRefunds(req.query, req.query));
   }
@@ -8763,8 +8342,6 @@ const adminBillingController = (() => {
 
   return {
     payments,
-    verifyPayment,
-    rejectPayment,
     refunds,
     approveRefund,
     rejectRefund,
@@ -9313,12 +8890,7 @@ const paymentController = (() => {
     res.redirect(303, `${envConfig.env.CLIENT_URL}${target}`);
   }
 
-  /** bKash / Nagad send the customer back here (GET); we finish the payment and redirect. */
-  async function gatewayCallback(req, res) {
-    redirectToReceipt(res, await paymentService.completeGatewayCheckout(req.params.method, req.query));
-  }
-
-  /** SSLCommerz posts the result from the customer's browser; same handling as above. */
+  /** SSLCommerz posts the result from the customer's browser; we finish the payment and redirect. */
   async function gatewayReturn(req, res) {
     redirectToReceipt(res, await paymentService.completeGatewayCheckout(req.params.method, req.body ?? {}));
   }
@@ -9348,7 +8920,6 @@ const paymentController = (() => {
   return {
     catalogue,
     create,
-    gatewayCallback,
     gatewayReturn,
     gatewayIpn,
     status,
@@ -9638,7 +9209,6 @@ const paymentRoutes = (() => {
     validateMiddleware.validate({ params: paymentValidation.invoiceParams }),
     paymentController.status,
   );
-  router.get('/payments/:method/callback', paymentController.gatewayCallback);
   router.post(
     '/refunds',
     authMiddleware.requireAuth,
@@ -9843,19 +9413,6 @@ const adminRoutes = (() => {
     authMiddleware.requirePermission('payments.manage'),
     validateMiddleware.validate({ query: paymentValidation.paymentsQuery }),
     adminBillingController.payments,
-  );
-  router.post(
-    '/payments/:id/verify',
-    authMiddleware.requirePermission('payments.manage'),
-    id,
-    adminBillingController.verifyPayment,
-  );
-  router.post(
-    '/payments/:id/reject',
-    authMiddleware.requirePermission('payments.manage'),
-    id,
-    validateMiddleware.validate({ body: paymentValidation.rejectPayment }),
-    adminBillingController.rejectPayment,
   );
   router.get(
     '/refunds',
@@ -10215,7 +9772,7 @@ Contact us any time at [support@ghotok.com.bd].`,
 - Send a **proposal** to let a family know you are interested.
 
 ## Unlocking a guardian's contact
-- Buy a connection package with bKash, Nagad or Rocket.
+- Buy a connection package through SSLCommerz (card, bKash, Nagad, Rocket or bank).
 - On a biodata, press **Unlock with 1 connection**. You keep access to that contact forever.
 
 ## Staying safe
@@ -10234,7 +9791,7 @@ Contact us any time at [support@ghotok.com.bd].`,
 - আগ্রহ জানাতে **প্রস্তাব** পাঠান।
 
 ## অভিভাবকের যোগাযোগ আনলক
-- বিকাশ, নগদ বা রকেটে কানেকশন প্যাকেজ কিনুন।
+- SSLCommerz-এর মাধ্যমে (কার্ড, বিকাশ, নগদ, রকেট বা ব্যাংক) কানেকশন প্যাকেজ কিনুন।
 - বায়োডাটায় **১টি কানেকশন দিয়ে আনলক** চাপুন। একবার আনলক করলে সবসময় দেখতে পাবেন।
 
 ## নিরাপদ থাকুন
@@ -10253,7 +9810,7 @@ Contact us any time at [support@ghotok.com.bd].`,
 - Account details: name, email and/or mobile number, and a hashed password.
 - Biodata details you choose to provide.
 - Private details: your name, your parents' names, your guardian's contact details and your NID images.
-- Payment details: package, method, sender number and transaction ID.
+- Payment details: package, amount, invoice number and the bank transaction ID reported by SSLCommerz.
 - Usage data such as profile visits, favorites and proposals.
 
 ## Who can see what
@@ -10278,7 +9835,7 @@ Questions: [support@ghotok.com.bd].`,
 - অ্যাকাউন্টের তথ্য: নাম, ইমেইল এবং/অথবা মোবাইল নম্বর ও এনক্রিপ্টেড পাসওয়ার্ড।
 - আপনার দেওয়া বায়োডাটার তথ্য।
 - গোপন তথ্য: আপনার নাম, বাবা-মায়ের নাম, অভিভাবকের যোগাযোগ ও এনআইডির ছবি।
-- পেমেন্টের তথ্য: প্যাকেজ, মাধ্যম, প্রেরকের নম্বর ও ট্রান্সজেকশন আইডি।
+- পেমেন্টের তথ্য: প্যাকেজ, পরিমাণ, ইনভয়েস নম্বর ও SSLCommerz-এর দেওয়া ব্যাংক ট্রান্সজেকশন আইডি।
 - প্রোফাইল ভিজিট, পছন্দ ও প্রস্তাবের মতো ব্যবহারের তথ্য।
 
 ## কে কী দেখতে পায়
@@ -10329,20 +9886,20 @@ Questions: [support@ghotok.com.bd].`,
       body: {
         en: `_Last updated: [date]_
 
-- **Unverified payments:** if we cannot verify your transaction ID, we will contact you. If you did pay, we credit your connections or return the money.
+- **Payment taken but no connections:** if SSLCommerz charged you but the connections did not arrive, contact support with your invoice number. We check it with SSLCommerz and credit your connections or return the money.
 - **Unused connections:** you can ask for a refund of a package within [7 days] of purchase if none of its connections were used.
 - **Used connections** are not refundable.
 - **Wrong contact details:** if an unlocked guardian number is wrong or switched off, report it from the biodata page. After checking, we return the connection as credit.
-- Refunds are sent to the same bKash, Nagad or Rocket number within [3 working days] of approval, or given as connection credit if you prefer.
+- Money refunds go back through SSLCommerz to the card or account you paid with, usually within [7–10 working days] of approval, or you can take connection credit instead.
 
 Request a refund from **My dashboard → Connections and billing**.`,
         bn: `_সর্বশেষ হালনাগাদ: [তারিখ]_
 
-- **যাচাই না হওয়া পেমেন্ট:** ট্রান্সজেকশন আইডি যাচাই করতে না পারলে আমরা যোগাযোগ করব। পেমেন্ট করে থাকলে কানেকশন দেওয়া হবে বা টাকা ফেরত দেওয়া হবে।
+- **টাকা কাটা হয়েছে কিন্তু কানেকশন আসেনি:** SSLCommerz-এ টাকা কেটে গেলেও কানেকশন না এলে ইনভয়েস নম্বরসহ সাপোর্টে যোগাযোগ করুন। SSLCommerz-এর সাথে মিলিয়ে কানেকশন দেওয়া হবে বা টাকা ফেরত দেওয়া হবে।
 - **অব্যবহৃত কানেকশন:** কোনো কানেকশন ব্যবহার না করলে কেনার [৭ দিনের] মধ্যে রিফান্ড চাইতে পারবেন।
 - **ব্যবহৃত কানেকশন** ফেরতযোগ্য নয়।
 - **ভুল যোগাযোগের তথ্য:** আনলক করা নম্বর ভুল বা বন্ধ থাকলে বায়োডাটা পাতা থেকে রিপোর্ট করুন। যাচাই শেষে কানেকশনটি ক্রেডিট হিসেবে ফেরত দেওয়া হবে।
-- অনুমোদনের [৩ কর্মদিবসের] মধ্যে একই বিকাশ, নগদ বা রকেট নম্বরে টাকা ফেরত দেওয়া হয়, অথবা চাইলে কানেকশন ক্রেডিট দেওয়া হয়।
+- টাকা ফেরত SSLCommerz-এর মাধ্যমে যে কার্ড বা অ্যাকাউন্ট থেকে পেমেন্ট করেছেন সেখানেই যায়, সাধারণত অনুমোদনের [৭–১০ কর্মদিবসের] মধ্যে; চাইলে কানেকশন ক্রেডিটও নিতে পারেন।
 
 রিফান্ডের আবেদন করুন **আমার ড্যাশবোর্ড → কানেকশন ও বিলিং** থেকে।`,
       },
@@ -10399,8 +9956,8 @@ Ghotok is only for adults looking for marriage with their families' knowledge. W
     {
       question: { en: 'How do I pay?', bn: 'কীভাবে পেমেন্ট করব?' },
       answer: {
-        en: 'Choose a package and pay with bKash, Nagad or Rocket. Send money to the number shown and enter the transaction ID, or use online checkout where available. Connections are added after verification.',
-        bn: 'প্যাকেজ বাছাই করে বিকাশ, নগদ বা রকেটে পেমেন্ট করুন। দেখানো নম্বরে টাকা পাঠিয়ে ট্রান্সজেকশন আইডি দিন, অথবা অনলাইন চেকআউট ব্যবহার করুন। যাচাইয়ের পর কানেকশন যোগ হবে।',
+        en: 'Choose a package and pay on the secure SSLCommerz page with a card, bKash, Nagad, Rocket or internet banking. Connections are added as soon as the payment is confirmed.',
+        bn: 'প্যাকেজ বাছাই করে SSLCommerz-এর নিরাপদ পাতায় কার্ড, বিকাশ, নগদ, রকেট বা ইন্টারনেট ব্যাংকিং দিয়ে পেমেন্ট করুন। পেমেন্ট নিশ্চিত হলেই কানেকশন যোগ হবে।',
       },
     },
     {
@@ -10933,12 +10490,11 @@ const seedScript = (() => {
       packageName: pkg.name,
       connections: pkg.connections,
       amount: pkg.price,
-      method: 'bkash',
-      mode: 'manual',
-      senderNumber: '01911000000',
-      trxId: 'DEMO8K2L1M',
+      method: 'sslcommerz',
+      mode: 'gateway',
+      trxId: 'DEMOSSL8K2L1M',
       status: 'verified',
-      reviewedBy: admin._id,
+      gateway: { paymentId: 'demo-member-payment' },
       reviewedAt: new Date(),
       creditedAt: new Date(),
     });
@@ -10949,22 +10505,30 @@ const seedScript = (() => {
       reason: verified.invoiceNo,
     });
 
-    // Payments waiting for verification.
+    // A few SSLCommerz payments by other members: one paid, one failed, one cancelled.
     for (const [i, u] of users.slice(0, 3).entries()) {
       const p = i % 2 ? await models.Package.findOne({ connections: 3 }) : pkg;
-      await models.Payment.create({
+      const status = ['verified', 'failed', 'cancelled'][i];
+      const payment = await models.Payment.create({
         invoiceNo: `INV-DEMO-${await models.nextSequence('invoice', 10000)}`,
         user: u._id,
         package: p._id,
         packageName: p.name,
         connections: p.connections,
         amount: p.price,
-        method: ['bkash', 'nagad', 'rocket'][i],
-        mode: 'manual',
-        senderNumber: u.phoneNumber,
-        trxId: `DEMO${i}TRX${i + 7}A`,
-        status: 'pending',
+        method: 'sslcommerz',
+        mode: 'gateway',
+        status,
+        gateway: { paymentId: `demo-payment-${i}` },
+        ...(status === 'verified' ? { trxId: `DEMOSSL${i}TRX${i + 7}A`, creditedAt: new Date() } : {}),
       });
+      if (status === 'verified') {
+        await connectionService.changeBalance(u._id, p.connections, {
+          type: 'purchase',
+          payment: payment._id,
+          reason: payment.invoiceNo,
+        });
+      }
     }
 
     const biodatas = await models.Biodata.find().sort({ biodataNo: 1 });
@@ -11158,8 +10722,6 @@ export {
   devOutboxIntegration,
   emailIntegration,
   smsIntegration,
-  bkashIntegration,
-  nagadIntegration,
   sslcommerzIntegration,
   messaging,
   paymentGateways,

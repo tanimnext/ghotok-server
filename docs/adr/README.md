@@ -10,6 +10,7 @@ them "Superseded by NNNN" instead).
 | [0002](0002-schema-driven-biodata.md)          | Define the biodata form once and derive everything from it            | Accepted           |
 | [0003](0003-same-origin-cookie-sessions.md)    | Same-origin API with cookie sessions and rotating refresh tokens      | Superseded by 0006 |
 | [0004](0004-connection-ledger.md)              | A connection ledger with atomic conditional updates                   | Accepted           |
-| [0005](0005-manual-payments-first.md)          | Manual mobile-money verification first, gateways optional             | Accepted           |
+| [0005](0005-manual-payments-first.md)          | Manual mobile-money verification first, gateways optional             | Superseded by 0008 |
 | [0006](0006-separate-repos-and-better-auth.md) | Separate client and server repositories, Better Auth, images on ImgBB | Accepted           |
 | [0007](0007-single-file-api.md)                | The whole API in one file, `index.js`                                 | Accepted           |
+| [0008](0008-sslcommerz-only.md)                | SSLCommerz is the only way to pay                                     | Accepted           |

@@ -8,6 +8,21 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **Payments are SSLCommerz only** (card, bKash, Nagad, Rocket and internet banking on
+  SSLCommerz's page). Removed: the bKash and Nagad gateway integrations, Rocket, and the manual
+  "Send Money + transaction ID" flow with admin verify/reject (`POST /api/admin/payments/:id/verify`
+  and `/reject`, `GET /api/payments/:method/callback`, the `BKASH_*`/`NAGAD_*` variables, the
+  manual numbers and `verificationHours` in the payment settings, the `payment_rejected`
+  notification and the overview's `pendingPayments`).
+- `POST /api/payments` takes `{ packageId }` and answers `{ payment, redirectURL }`, or
+  `503 PAYMENTS_UNAVAILABLE` until SSLCommerz is configured. `GET /api/packages` returns
+  `checkout: { enabled }` instead of `methods`; public settings carry `payments.checkoutEnabled`.
+- The admin payments list is read-only (`?status&q`). Older bKash/Nagad/Rocket and manual
+  payments stay readable.
+- `index.js` loads `.env` itself, so `node index.js` and `nodemon` pick up `MONGODB_URI`; when
+  MongoDB cannot be reached the server prints how to start one or use Atlas.
+- nodemailer 10 (clears the `npm audit` advisories).
+
 - The whole API is now one file, `index.js`, organised in sections (configuration, shared rules,
   models, integrations, Better Auth, services, validation, serializers, middleware, controllers,
   routes, app, seed, start). Endpoints, responses and environment variables are unchanged.

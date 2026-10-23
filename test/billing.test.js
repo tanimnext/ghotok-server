@@ -1,9 +1,9 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, approvedBiodata, userWithAgent } from './helpers.js';
-import { models } from '../index.js';
+import { connectionService, models } from '../index.js';
 
-const { ConnectionTransaction, Package, User } = models;
+const { Package, Payment, User } = models;
 
 let standard;
 let starter;
@@ -13,18 +13,23 @@ beforeAll(async () => {
   standard = await Package.create({ name: { en: 'Standard' }, connections: 5, price: 500, sortOrder: 2 });
 });
 
-async function manualPayment(agent, { pkg = standard, method = 'bkash', trxId } = {}) {
-  return agent.post('/api/payments').send({
-    packageId: pkg._id.toString(),
-    method,
-    mode: 'manual',
-    senderNumber: '01712345678',
-    trxId: trxId ?? `TRX${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
+/** A package bought and paid through SSLCommerz (the gateway result is applied directly). */
+async function paidPayment(user, pkg = standard) {
+  const payment = await Payment.create({
+    invoiceNo: `INV-TEST-${Math.random().toString(36).slice(2, 10).toUpperCase()}`,
+    user: user._id,
+    package: pkg._id,
+    packageName: pkg.name,
+    connections: pkg.connections,
+    amount: pkg.price,
+    method: 'sslcommerz',
+    status: 'initiated',
   });
+  return connectionService.creditPayment(payment._id, { trxId: `BT${payment.invoiceNo}` });
 }
 
 describe('connections and payments', () => {
-  it('lists active packages with payment methods', async () => {
+  it('lists active packages in order', async () => {
     const { agent } = await userWithAgent();
     const res = await agent.get('/api/packages');
     expect(res.status).toBe(200);
@@ -32,13 +37,7 @@ describe('connections and payments', () => {
       [3, 300],
       [5, 500],
     ]);
-    expect(res.body.methods.map((m) => m.value)).toEqual(['bkash', 'nagad', 'rocket', 'sslcommerz']);
-    expect(res.body.methods.every((m) => m.gateway === false)).toBe(true);
-    // Card / mobile banking needs SSLCommerz keys, so it is off here.
-    expect(res.body.methods.find((m) => m.value === 'sslcommerz')).toMatchObject({
-      enabled: false,
-      gatewayOnly: true,
-    });
+    expect(res.body.checkout).toEqual({ enabled: false });
   });
 
   it('refuses to unlock a contact without a balance', async () => {
@@ -47,53 +46,6 @@ describe('connections and payments', () => {
     const res = await agent.post(`/api/biodatas/${biodata.biodataNo}/unlock`);
     expect(res.status).toBe(402);
     expect(res.body.error.code).toBe('INSUFFICIENT_CONNECTIONS');
-  });
-
-  it('credits a manual payment once after admin verification', async () => {
-    const { agent, user } = await userWithAgent();
-    const pay = await manualPayment(agent, { trxId: 'ABC123XYZ' });
-    expect(pay.status).toBe(201);
-    expect(pay.body.payment).toMatchObject({
-      status: 'pending',
-      amount: 500,
-      connections: 5,
-      trxId: 'ABC123XYZ',
-    });
-
-    const dup = await manualPayment(agent, { trxId: 'abc123xyz' });
-    expect(dup.status).toBe(409);
-    expect(dup.body.error.code).toBe('DUPLICATE_TRX');
-
-    const { agent: admin } = await userWithAgent({ role: 'admin' });
-    const [a, b] = await Promise.all([
-      admin.post(`/api/admin/payments/${pay.body.payment.id}/verify`),
-      admin.post(`/api/admin/payments/${pay.body.payment.id}/verify`),
-    ]);
-    expect([a.status, b.status].sort()).toEqual([200, 409]);
-    const fresh = await User.findById(user._id);
-    expect(fresh.connectionBalance).toBe(5);
-    expect(fresh.connectionsPurchased).toBe(5);
-    expect(await ConnectionTransaction.countDocuments({ user: user._id, type: 'purchase' })).toBe(1);
-
-    const history = await agent.get('/api/payments/mine');
-    expect(history.body.items[0].status).toBe('verified');
-  });
-
-  it('validates manual payment details', async () => {
-    const { agent } = await userWithAgent();
-    const badNumber = await agent
-      .post('/api/payments')
-      .send({ packageId: starter._id.toString(), method: 'nagad', senderNumber: '123', trxId: 'GOODTRX1' });
-    expect(badNumber.status).toBe(400);
-    const badTrx = await agent
-      .post('/api/payments')
-      .send({ packageId: starter._id.toString(), method: 'nagad', senderNumber: '01812345678', trxId: 'x' });
-    expect(badTrx.status).toBe(400);
-    const gateway = await agent
-      .post('/api/payments')
-      .send({ packageId: starter._id.toString(), method: 'bkash', mode: 'gateway' });
-    expect(gateway.status).toBe(400);
-    expect(gateway.body.error.code).toBe('GATEWAY_UNAVAILABLE');
   });
 
   it('unlocks a contact once, charging exactly one connection even on concurrent clicks', async () => {
@@ -167,37 +119,39 @@ describe('connections and payments', () => {
     const { agent, user } = await userWithAgent();
     const { agent: admin } = await userWithAgent({ role: 'admin' });
 
-    // A payment the team could not verify, later refunded as credit.
-    const p1 = await manualPayment(agent, { pkg: starter });
-    await admin
-      .post(`/api/admin/payments/${p1.body.payment.id}/reject`)
-      .send({ reason: 'Transaction ID not found' });
+    // Paid twice by mistake: the second payment is refunded as connection credit.
+    const p1 = await paidPayment(user, starter);
+    expect((await User.findById(user._id)).connectionBalance).toBe(3);
     const r1 = await agent
       .post('/api/refunds')
-      .send({ paymentId: p1.body.payment.id, reason: 'I did pay, here is my statement.' });
+      .send({ paymentId: p1._id.toString(), reason: 'I was charged twice for the same package.' });
     expect(r1.status).toBe(201);
     const list = await admin.get('/api/admin/refunds?status=pending');
     const item = list.body.items.find((r) => r.id === r1.body.refund.id);
     const ok = await admin
       .post(`/api/admin/refunds/${item.id}/approve`)
-      .send({ resolution: 'connection_credit' });
+      .send({ resolution: 'connection_credit', connections: 2 });
     expect(ok.status).toBe(200);
-    expect((await User.findById(user._id)).connectionBalance).toBe(3);
+    expect((await User.findById(user._id)).connectionBalance).toBe(5);
 
-    // A verified payment refunded with money back takes its connections back.
-    const p2 = await manualPayment(agent, { pkg: standard });
-    await admin.post(`/api/admin/payments/${p2.body.payment.id}/verify`);
-    expect((await User.findById(user._id)).connectionBalance).toBe(8);
+    // Money back (refunded in the SSLCommerz panel) takes the purchased connections back.
+    const p2 = await paidPayment(user, standard);
+    expect((await User.findById(user._id)).connectionBalance).toBe(10);
     const r2 = await agent
       .post('/api/refunds')
-      .send({ paymentId: p2.body.payment.id, reason: 'Bought the wrong package by mistake.' });
+      .send({ paymentId: p2._id.toString(), reason: 'Bought the wrong package by mistake.' });
     const ok2 = await admin
       .post(`/api/admin/refunds/${r2.body.refund.id}/approve`)
-      .send({ resolution: 'money_back', refundTrxId: 'RFND123' });
+      .send({ resolution: 'money_back', refundTrxId: 'SSLRFND123' });
     expect(ok2.status).toBe(200);
-    expect((await User.findById(user._id)).connectionBalance).toBe(3);
+    expect((await User.findById(user._id)).connectionBalance).toBe(5);
     const mine = await agent.get('/api/payments/mine');
-    expect(mine.body.items.find((p) => p.id === p2.body.payment.id).status).toBe('refunded');
+    expect(mine.body.items.find((p) => p.id === p2._id.toString()).status).toBe('refunded');
+
+    // Admins only see payments; SSLCommerz decides whether one succeeded.
+    const payments = await admin.get(`/api/admin/payments?q=${p2.invoiceNo}`);
+    expect(payments.body.items[0]).toMatchObject({ invoiceNo: p2.invoiceNo, method: 'sslcommerz' });
+    expect((await admin.post(`/api/admin/payments/${p2._id}/verify`)).status).toBe(404);
   });
 
   it('keeps every admin route for admins: members get 403, visitors 401', async () => {
@@ -215,7 +169,9 @@ describe('connections and payments', () => {
           .send({ user: 'x', action: 'grant', quantity: 1, reason: 'abc' })
       ).status,
     ).toBe(403);
-    expect((await admin.get('/api/admin/overview')).body.kpis.pendingPayments).toBeTypeOf('number');
+    const overview = (await admin.get('/api/admin/overview')).body;
+    expect(overview.kpis.pendingRefunds).toBeTypeOf('number');
+    expect(overview.kpis.pendingPayments).toBeUndefined();
   });
 
   it('manages packages and settings as an admin', async () => {
@@ -232,19 +188,13 @@ describe('connections and payments', () => {
 
     const s = await admin
       .put('/api/admin/settings/payments')
-      .send({ value: { bkash: { manualNumber: '01700000001' }, rocket: { enabled: false } } });
+      .send({ value: { approvalGift: 2, approvedDiscountPercent: 10 } });
     expect(s.status).toBe(200);
-    const methods = (await admin.get('/api/packages')).body.methods;
-    expect(methods.find((m) => m.value === 'bkash').manualNumber).toBe('01700000001');
-    expect(methods.find((m) => m.value === 'rocket').enabled).toBe(false);
-    const { agent } = await userWithAgent();
-    const rocket = await agent.post('/api/payments').send({
-      packageId: starter._id.toString(),
-      method: 'rocket',
-      senderNumber: '01812345678',
-      trxId: 'ROCKET123',
+    const settings = await request(app).get('/api/public/settings');
+    expect(settings.body.payments).toEqual({
+      approvalGift: 2,
+      approvedDiscountPercent: 10,
+      checkoutEnabled: false,
     });
-    expect(rocket.status).toBe(400);
-    expect(rocket.body.error.code).toBe('METHOD_DISABLED');
   });
 });

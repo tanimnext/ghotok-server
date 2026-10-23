@@ -1,6 +1,6 @@
 # 0005. Manual mobile-money verification first, gateways optional
 
-Status: Accepted
+Status: Superseded by 0008
 
 ## Context
 
