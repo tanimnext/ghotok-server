@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Zero-setup development database.** When no MongoDB answers at the default local address,
+  `npm run dev` / `node index.js` / `nodemon` start a local MongoDB in the background (data in
+  `.data/mongo`), and an empty database gets the first admin and default content. `npm run
+db:stop` stops it. Production and a configured `MONGODB_URI` (Atlas) never fall back.
+- `index.js` reads `.env` itself, so `nodemon` and `node index.js` use it too, and a missing
+  database is reported in two lines instead of a driver stack trace.
+
 ### Changed
 
 - **Payments are SSLCommerz only** (card, bKash, Nagad, Rocket and internet banking on

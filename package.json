@@ -2,7 +2,7 @@
   "name": "ghotok-server",
   "version": "2.0.0",
   "private": true,
-  "description": "Ghotok REST API — Node.js, Express, MongoDB and Better Auth.",
+  "description": "Ghotok REST API \u2014 Node.js, Express, MongoDB and Better Auth.",
   "type": "module",
   "main": "index.js",
   "engines": {
@@ -18,7 +18,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run lint && npm run format:check && npm test"
+    "check": "npm run lint && npm run format:check && npm test",
+    "db:stop": "node index.js db:stop"
   },
   "dependencies": {
     "better-auth": "1.7.7",

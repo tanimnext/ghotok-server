@@ -62,8 +62,13 @@ npm install
 cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-**2. Give the server a database.** If you see `Cannot reach MongoDB at mongodb://127.0.0.1:27017`,
-this step is missing. Choose one:
+**2. Give the server a database.** The quickest way is to do nothing: in development, when no
+MongoDB answers at the default `mongodb://127.0.0.1:27017/ghotok`, the server starts its own local
+MongoDB in the background (the first start downloads it, about 100 MB). Its data lives in
+`.data/mongo` inside this folder and survives restarts; stop it with `npm run db:stop`. A fresh
+database also gets the first admin and the default content automatically.
+
+For a database you keep (and always in production), choose one:
 
 - **A. MongoDB Atlas (free, nothing to install, recommended)**
   1. Sign up at https://www.mongodb.com/cloud/atlas/register and create a free **M0** cluster.
@@ -72,7 +77,7 @@ this step is missing. Choose one:
   4. _Connect → Drivers_: copy the connection string, put your password in it and add the
      database name before the `?`, then set it in `.env`:
      `MONGODB_URI=mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/ghotok?retryWrites=true&w=majority`
-- **B. MongoDB on your own computer**
+- **B. MongoDB installed on your own computer**
   - macOS (Homebrew): `brew tap mongodb/brew && brew install mongodb-community && brew services start mongodb-community`
     (plain `brew install mongodb-community` fails without the `mongodb/brew` tap).
   - Windows: install _MongoDB Community Server_ from https://www.mongodb.com/try/download/community
@@ -132,6 +137,7 @@ connections are taken back.
 | `npm start`                       | Start for production                                                                   |
 | `npm run seed`                    | Create the first admin, packages, CMS pages and FAQs (safe to re-run)                  |
 | `npm run seed:demo`               | The above plus demo members, biodatas, payments and support data (never in production) |
+| `npm run db:stop`                 | Stop the background development MongoDB started by `npm run dev` (see above)           |
 | `npm test`                        | Run the test suite against a throwaway MongoDB                                         |
 | `npm run lint` / `npm run format` | ESLint / Prettier                                                                      |
 | `npm run check`                   | Lint, format check and tests (what CI runs)                                            |

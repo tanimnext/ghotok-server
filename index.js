@@ -32,7 +32,9 @@
 // (/api/auth) → JSON body → body sanitising → origin check → rate limit → load user → routes
 // → errors. Every route is listed in docs/API.md.
 
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { betterAuth } from 'better-auth';
@@ -189,24 +191,88 @@ const loggerConfig = (() => {
 const dbConfig = (() => {
   mongoose.set('strictQuery', true);
 
+  const DEFAULT_URI = 'mongodb://127.0.0.1:27017/ghotok';
+  const CONNECT_OPTIONS = { autoIndex: true, serverSelectionTimeoutMS: 10000 };
+  // Where the development MongoDB (below) keeps its data and log. Git ignores `.data/`.
+  const DEV_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '.data');
+
+  const isUnreachable = (err) =>
+    err.name === 'MongooseServerSelectionError' || err.name === 'MongoServerSelectionError';
+
+  function unreachableError(uri, cause) {
+    const where = uri.replace(/\/\/[^@/]*@/, '//***@');
+    return new Error(
+      [
+        `Cannot reach MongoDB at ${where}.`,
+        'Check MONGODB_URI in .env. For MongoDB Atlas, also allow your IP address under Network Access.',
+      ].join('\n'),
+      { cause },
+    );
+  }
+
+  /**
+   * Development only: starts a MongoDB on 127.0.0.1:27017 in the background, using the
+   * binary that mongodb-memory-server (a dev dependency) downloads, with its data in
+   * `.data/mongo`. It keeps running between restarts (nodemon) so data is not lost; stop it
+   * with `npm run db:stop`.
+   */
+  async function startDevMongo() {
+    const { logger } = loggerConfig;
+    let MongoBinary;
+    try {
+      ({ MongoBinary } = await import('mongodb-memory-server'));
+    } catch {
+      throw new Error(
+        'No MongoDB is running on 127.0.0.1:27017 and the development MongoDB is not installed.\n' +
+          'Run `npm install` (with dev dependencies), or set MONGODB_URI in .env to a MongoDB Atlas connection string.',
+      );
+    }
+    logger.warn(
+      'No MongoDB on 127.0.0.1:27017: starting a local development MongoDB (the first time it downloads about 100 MB).',
+    );
+    const binary = await MongoBinary.getPath();
+    const dbPath = path.join(DEV_DATA_DIR, 'mongo');
+    fs.mkdirSync(dbPath, { recursive: true });
+    const log = fs.openSync(path.join(DEV_DATA_DIR, 'mongo.log'), 'a');
+    const child = spawn(binary, ['--dbpath', dbPath, '--port', '27017', '--bind_ip', '127.0.0.1'], {
+      detached: true,
+      stdio: ['ignore', log, log],
+    });
+    const exited = new Promise((_, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code) =>
+        reject(
+          new Error(
+            `The development MongoDB stopped right away (exit code ${code}). See .data/mongo.log, ` +
+              'or set MONGODB_URI in .env to a MongoDB Atlas connection string.',
+          ),
+        ),
+      );
+    });
+    try {
+      await Promise.race([
+        mongoose.connect(DEFAULT_URI, { ...CONNECT_OPTIONS, serverSelectionTimeoutMS: 60000 }),
+        exited,
+      ]);
+    } finally {
+      child.removeAllListeners('exit');
+      child.unref();
+    }
+    logger.info(
+      { dbPath },
+      'Development MongoDB started in the background; it keeps running until `npm run db:stop`',
+    );
+  }
+
   async function connectDb(uri = envConfig.env.MONGODB_URI) {
     try {
-      await mongoose.connect(uri, { autoIndex: true, serverSelectionTimeoutMS: 10000 });
+      await mongoose.connect(uri, CONNECT_OPTIONS);
     } catch (err) {
-      // The usual first-run problem: no MongoDB at MONGODB_URI. Say how to fix it instead of
-      // printing the driver's topology dump.
-      if (err.name === 'MongooseServerSelectionError' || err.name === 'MongoServerSelectionError') {
-        const where = uri.replace(/\/\/[^@/]*@/, '//***@');
-        throw new Error(
-          [
-            `Cannot reach MongoDB at ${where}.`,
-            'Either start a local MongoDB (macOS: brew tap mongodb/brew && brew install mongodb-community && brew services start mongodb-community),',
-            'or create a free cluster on MongoDB Atlas and put its connection string in MONGODB_URI in .env.',
-          ].join('\n'),
-          { cause: err },
-        );
-      }
-      throw err;
+      if (!isUnreachable(err)) throw err;
+      // Only the default local address falls back; a configured database (Atlas) must work.
+      if (envConfig.isProd || envConfig.isTest || uri !== DEFAULT_URI) throw unreachableError(uri, err);
+      await mongoose.disconnect().catch(() => undefined);
+      await startDevMongo();
     }
     loggerConfig.logger.info({ db: mongoose.connection.name }, 'MongoDB connected');
     return mongoose.connection;
@@ -216,7 +282,24 @@ const dbConfig = (() => {
     await mongoose.disconnect();
   }
 
-  return { connectDb, disconnectDb };
+  /** `node index.js db:stop`: shuts down the development MongoDB started by connectDb. */
+  async function stopDevMongo() {
+    try {
+      await mongoose.connect(DEFAULT_URI, { serverSelectionTimeoutMS: 3000 });
+    } catch {
+      loggerConfig.logger.info('No MongoDB is running on 127.0.0.1:27017.');
+      return;
+    }
+    // The server closes the connection as it shuts down, so the command itself errors.
+    await mongoose.connection.db
+      .admin()
+      .command({ shutdown: 1 })
+      .catch(() => undefined);
+    await mongoose.disconnect().catch(() => undefined);
+    loggerConfig.logger.info('Development MongoDB stopped.');
+  }
+
+  return { connectDb, disconnectDb, stopDevMongo };
 })();
 
 // ==============================================================================================
@@ -10651,6 +10734,14 @@ async function startServer() {
   const { env } = envConfig;
   const { logger } = loggerConfig;
 
+  // A fresh development database gets the first admin, packages, pages and FAQs right away.
+  if (!envConfig.isProd && !(await models.User.exists({}))) {
+    await seedScript.seedBase();
+    logger.info(
+      'Empty database: added the first admin and default content (npm run seed:demo adds demo data)',
+    );
+  }
+
   const server = createApp().listen(env.PORT, () => {
     logger.info(`Ghotok API listening on http://localhost:${env.PORT}`);
   });
@@ -10673,6 +10764,7 @@ const runDirectly =
   Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (runDirectly) {
   if (process.argv[2] === 'seed') seedScript.runSeedCommand();
+  else if (process.argv[2] === 'db:stop') await dbConfig.stopDevMongo();
   else
     await startServer().catch((err) => {
       console.error(`\n${err.message}\n`);
