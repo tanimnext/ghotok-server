@@ -40,6 +40,6 @@
     "mongodb-memory-server": "^11.3.0",
     "prettier": "^3.6.2",
     "supertest": "^7.3.1",
-    "vitest": "^4.1.12"
+    "vitest": "^5.0.5"
   }
 }
